@@ -1,0 +1,32 @@
+[
+  {
+    "id": "prod_1",
+    "name": "The Hoodie",
+    "category": "Hoodies & Sweats",
+    "price": 65.00,
+    "image": "/images/download.jpeg",
+    "isNew": true,
+    "slug": "rabbit-hole-hoodie",
+    "description": "Crafted from heavyweight French terry, this hoodie features a relaxed drop-shoulder fit perfect for soft days. Features our signature embroidered bunny logo on the cuff.",
+    "variants": [
+      { "id": "v_1", "color": "Espresso", "size": "S", "stock": 5 },
+      { "id": "v_2", "color": "Espresso", "size": "M", "stock": 12 },
+      { "id": "v_3", "color": "Espresso", "size": "L", "stock": 0 },
+      { "id": "v_4", "color": "Bone", "size": "M", "stock": 8 },
+      { "id": "v_5", "color": "Bone", "size": "L", "stock": 10 }
+    ]
+  },
+  {
+    "id": "prod_2",
+    "name": "Signature Canvas Tote",
+    "category": "Accessories",
+    "price": 28.00,
+    "image": "/images/download.jpeg",
+    "isNew": false,
+    "slug": "signature-canvas-tote",
+    "description": "A durable, everyday carry-all made from 100% organic cotton canvas. Features reinforced straps and an interior pocket.",
+    "variants": [
+      { "id": "v_6", "color": "Natural", "size": "OS", "stock": 20 }
+    ]
+  }
+]

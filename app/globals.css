@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+/* 
+  Tailwind v4 Setup: We define custom colors and fonts 
+  directly in CSS using the @theme directive.
+*/
+@theme {
+  --color-ssuni-light1: #EAE3DD;
+  --color-ssuni-light2: #E6E0D2;
+  --color-ssuni-slate: #72858A;
+  --color-ssuni-sage: #8C947D;
+  --color-ssuni-brown: #502D1E;
+
+  /* Map the fonts imported in layout.tsx to Tailwind utilities */
+  --font-cinzel: var(--font-cinzel), serif;
+  --font-belleza: var(--font-belleza), sans-serif;
+}
+
+/* Force the body to use our light cream background instead of dark mode */
+@layer base {
+  html, body {
+    background-color: var(--color-ssuni-light1);
+    color: var(--color-ssuni-brown);
+    
+    /* Hide scrollbar for Firefox */
+    scrollbar-width: none; 
+    /* Hide scrollbar for IE and Edge */
+    -ms-overflow-style: none; 
+  }
+
+  /* Hide scrollbar for Chrome, Safari and Opera */
+  html::-webkit-scrollbar, body::-webkit-scrollbar {
+    display: none;
+  }
+}
