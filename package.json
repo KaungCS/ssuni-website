@@ -10,7 +10,9 @@
     "cf:build": "opennextjs-cloudflare build",
     "cf:preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
+    "cf:typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
+    "db:push": "supabase db push",
+    "db:verify": "node supabase/tests/rls.mjs && supabase db query --linked -f supabase/tests/admin-path.sql && supabase db advisors --linked --type security"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
@@ -27,6 +29,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.1",
+    "supabase": "^2.115.0",
     "tailwindcss": "^4",
     "typescript": "^5",
     "wrangler": "^4.125.0"

@@ -18,6 +18,9 @@ const eslintConfig = defineConfig([
     "**/.open-next/**",
     "**/.wrangler/**",
     "cloudflare-env.d.ts",
+    // Supabase CLI scratch state.
+    "**/supabase/.temp/**",
+    "**/supabase/.branches/**",
   ]),
 ]);
 
