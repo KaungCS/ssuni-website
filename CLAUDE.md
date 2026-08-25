@@ -14,7 +14,12 @@ npm run cf:build    # bundle a Cloudflare worker via OpenNext
 npm run cf:preview  # build + serve the worker on the real workerd runtime
 npm run cf:deploy   # build + deploy to Cloudflare
 npm run cf:typegen  # regenerate cloudflare-env.d.ts from wrangler.jsonc
+
+npm run db:push     # apply supabase/migrations to the linked project
+npm run db:verify   # RLS suite + admin-path suite + Supabase security advisor
 ```
+
+`npm run db:verify` is the schema's test suite and should be green before any PR that touches `supabase/`. It writes nothing permanent (the Reservation it creates is deleted; the admin-path SQL runs inside a transaction that rolls back), so it is safe against production. The advisor's only expected findings are `rls_auto_enable` ×2 — a Supabase platform event trigger, not RPC-callable — and leaked-password protection, which is moot while auth is email-OTP only. **Anything else the advisor reports is a real finding.** Extend `supabase/tests/rls.mjs` as tables are added, so the #24 RLS audit is a re-run rather than a manual walk.
 
 `npm run lint` should report **5 warnings, 0 errors** (all `<img>`-vs-`next/image`, tracked in issue #11). If it reports thousands, a build-output directory has escaped the ignore list in `eslint.config.mjs` — the patterns are deliberately unanchored (`**/.next/**`, `**/.open-next/**`, …) because root-anchored ones missed a nested build dir once and buried the real findings 800:1. **Add any new build/output directory to both `eslint.config.mjs` and `.gitignore`.**
 
