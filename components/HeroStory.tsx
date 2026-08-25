@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 export default function HeroStory() {
   return (
     <section className="relative w-full h-screen bg-ssuni-light2 flex items-center justify-center overflow-hidden">
@@ -21,7 +23,7 @@ export default function HeroStory() {
         </p>
         
         <h1 className="font-cinzel text-5xl md:text-7xl font-normal text-ssuni-light2 mb-6 uppercase [text-shadow:_0_2px_15px_rgba(0,0,0,0.9)]">
-          The First Collection
+          Hi U District
         </h1>
         
         <p className="font-belleza text-lg mb-8 text-ssuni-light2 [text-shadow:_0_2px_10px_rgba(0,0,0,0.8)]">
@@ -29,12 +31,12 @@ export default function HeroStory() {
         </p>
         
         {/* Added a subtle backdrop blur and semi-transparent background to keep the button readable */}
-        <a
+        <Link
           href="/catalog"
           className="inline-block border border-ssuni-brown px-8 py-3 font-belleza tracking-widest text-sm hover:bg-ssuni-brown hover:text-ssuni-light1 transition-colors duration-300 bg-white/20 backdrop-blur-[2px] shadow-sm"
         >
           EXPLORE THE CATALOG
-        </a>
+        </Link>
       </div>
     </section>
   );

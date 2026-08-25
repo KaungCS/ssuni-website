@@ -14,8 +14,14 @@
 /coverage
 
 # next.js
-/.next/
-/out/
+# Unanchored: also catches build output from a dev server started in a subdirectory.
+.next/
+out/
+
+# cloudflare / opennext
+.open-next/
+.wrangler/
+cloudflare-env.d.ts
 
 # production
 /build
