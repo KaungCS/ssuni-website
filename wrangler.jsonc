@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ssuni-website",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-08-24",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  }
+  // Secrets are NOT set here — wrangler.jsonc is committed. Production values
+  // (Supabase URL/anon key, Supabase service role key, Stripe keys) are set in the
+  // Cloudflare dashboard or via `wrangler secret put`. See issue #26.
+}

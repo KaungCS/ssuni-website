@@ -1,0 +1,9 @@
+# Admin Dashboard deferred past launch; Supabase Studio in the interim
+
+ADR 0002 justified moving Products and Variants into Supabase as "a hard prerequisite for the Admin Dashboard, one of the most important planned features" — which framed the dashboard as launch scope. With five and a half weeks to the hard end-of-September deadline and one part-time developer, the full dashboard (Product CRUD, Hero Story and Slot assignment, Orders, Hidden/Archive) does not fit alongside the Supabase migration, Cart, Stripe, Orders, RLS, and legal pages. We chose to defer it: at launch the client manages Products and Hero Stories directly in Supabase Studio, and only a minimal Orders-only admin view ships — list Orders, mark `Shipped`, enter a Tracking Link. That view is the true launch requirement, because a sale that cannot be fulfilled is worse than a catalog that is awkward to edit. Building the full dashboard anyway and cutting Stripe or the legal pages instead was rejected: those are what make the site a store rather than a brochure.
+
+This does not invalidate ADR 0002 — Orders, Stripe, and RLS all need the database regardless, and Vercel's read-only filesystem was never the only reason to move off JSON — but the stated urgency behind that ADR now rests on a different argument than the one it records.
+
+## Consequences
+
+The client works in Supabase Studio at launch, which means real training on a developer-facing tool and a genuine risk of a mis-edited row against no validation layer. Supabase Studio access is also full table access, so the Hidden flag and the Archive are conventions the client has to honour by hand rather than affordances the UI enforces. This holds only as long as the deferral does — the Admin Dashboard should be first scope in October, not an indefinite postponement.
