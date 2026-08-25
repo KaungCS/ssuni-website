@@ -23,6 +23,10 @@ out/
 .wrangler/
 cloudflare-env.d.ts
 
+# supabase cli scratch state (also covered by supabase/.gitignore)
+supabase/.temp/
+supabase/.branches/
+
 # production
 /build
 

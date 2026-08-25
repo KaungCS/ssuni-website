@@ -18,11 +18,15 @@ npm run cf:typegen  # regenerate cloudflare-env.d.ts from wrangler.jsonc
 
 `npm run lint` should report **5 warnings, 0 errors** (all `<img>`-vs-`next/image`, tracked in issue #11). If it reports thousands, a build-output directory has escaped the ignore list in `eslint.config.mjs` — the patterns are deliberately unanchored (`**/.next/**`, `**/.open-next/**`, …) because root-anchored ones missed a nested build dir once and buried the real findings 800:1. **Add any new build/output directory to both `eslint.config.mjs` and `.gitignore`.**
 
-There is no test suite configured in this project yet — setting one up (e.g. Vitest + React Testing Library for components/logic; Playwright can follow later for the checkout flow) is an early task, needed before the workflow below can actually be followed.
+There is no test suite configured in this project yet. **Vitest arrives with the Cart provider (#12) and the checkout route (#15)** — that is the first code where a test earns its keep, and setting one up before then would spend schedule on presentational components. See the workflow below for what it covers when it lands, and issue #32 for why the scope is narrow.
 
 ## Development workflow
 
-- **Write test cases before implementation.** For any new feature or functionality (not bug fixes in isolation), write the failing test(s) first, confirm they fail for the right reason, then implement until they pass. Use the `tdd` skill (`mattpocock-skills:tdd`) for this.
+- **Write test cases before implementation — for the logic that can lose money.** Decided 2026-08-25 (issue #32). TDD is **required** for: Cart totals and quantity math (#12), the reservation check-and-hold RPC (#15, ADR 0010), and Stripe webhook handling and idempotency (#18, #30). For those, write the failing test(s) first, confirm they fail for the right reason, then implement until they pass — use the `tdd` skill (`mattpocock-skills:tdd`).
+
+  Everything else — presentational components, layout, styling, catalog rendering — is **exempt**, and writing tests for it before the September launch is out of scope, not an oversight. The rule is narrow on purpose: against ~90–115 total hours, correctness on retries and race conditions is worth the time and snapshot-testing a hero banner is not.
+
+  Database schema is verified by querying the real database (RLS proved with an actual anon client), not by unit tests.
 
 ## Project state — read this before planning anything
 
