@@ -69,14 +69,17 @@ const section = (s) => console.log(`\n${s}`);
 // -- 1. anon reads -----------------------------------------------------------
 section("1. Anonymous reads");
 
+// Row counts are floors, not equalities. The seeded catalog is placeholder data
+// (#5); the client adds real Products in Supabase Studio, and an exact count
+// would turn every one of those into a red test suite.
 const products = await anon("GET", "products?select=slug,name,price,department,category,collections,is_new&order=slug");
-check("anon can select products", products.status === 200 && products.json?.length === 2,
-  `status ${products.status}, ${products.json?.length ?? 0} rows`);
+check("anon can select products", products.status === 200 && products.json?.length >= 2,
+  `status ${products.status}, ${products.json?.length ?? 0} rows (expected >= 2)`);
 if (products.json?.length) console.log("        ", JSON.stringify(products.json));
 
 const variants = await anon("GET", "variants?select=color,size,stock");
-check("anon can select variants", variants.status === 200 && variants.json?.length === 6,
-  `status ${variants.status}, ${variants.json?.length ?? 0} rows`);
+check("anon can select variants", variants.status === 200 && variants.json?.length >= 6,
+  `status ${variants.status}, ${variants.json?.length ?? 0} rows (expected >= 6)`);
 
 // -- 2. anon writes are refused ---------------------------------------------
 section("2. Anonymous writes are refused (ADR 0004)");

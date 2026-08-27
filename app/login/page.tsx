@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { createClient } from "../../lib/supabase"; // Use relative import to avoid path alias issues
+import { createClient } from "../../lib/supabase/client"; // Use relative import to avoid path alias issues
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");

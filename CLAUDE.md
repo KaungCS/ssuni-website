@@ -17,7 +17,10 @@ npm run cf:typegen  # regenerate cloudflare-env.d.ts from wrangler.jsonc
 
 npm run db:push     # apply supabase/migrations to the linked project
 npm run db:verify   # RLS suite + admin-path suite + Supabase security advisor
+npm run db:types    # regenerate lib/database.types.ts from the linked schema
 ```
+
+**Run `npm run db:types` after every migration and commit the result.** `lib/database.types.ts` is generated, never hand-edited; queries are typed against it, so a stale file produces confident-looking types that no longer match the database.
 
 `npm run db:verify` is the schema's test suite and should be green before any PR that touches `supabase/`. It writes nothing permanent (the Reservation it creates is deleted; the admin-path SQL runs inside a transaction that rolls back), so it is safe against production. The advisor's only expected findings are `rls_auto_enable` ×2 — a Supabase platform event trigger, not RPC-callable — and leaked-password protection, which is moot while auth is email-OTP only. **Anything else the advisor reports is a real finding.** Extend `supabase/tests/rls.mjs` as tables are added, so the #24 RLS audit is a re-run rather than a manual walk.
 
@@ -41,17 +44,24 @@ SSUNI is building toward a **hard end-of-September 2026 launch**, solo, at ~15�
 
 Much of what the Architecture section below describes is **scheduled to be replaced**, not preserved — see the roadmap and the issues before "improving" any of it.
 
+**The catalog in the database is placeholder seed data (issue #5), not the real catalog.** Two Products and six Variants exist because they were seeded from the old `data/products.json`; the client loads real photography, copy, pricing and stock counts before launch, and the real catalog will be substantially larger. **Never justify a decision with the current row count** — no "there are only two products, so caching/pagination/indexing doesn't matter." Size decisions for a real storefront catalog. Tests assert row-count *floors* (`>= 2`) for the same reason: an exact count turns the client adding a Product into a failing suite.
+
 ## Architecture
 
 Next.js 16 App Router site (React 19, TypeScript, Tailwind CSS v4) for SSUNI, a clothing storefront.
 
-- **`app/`** — routes. `app/page.tsx` (home), `app/catalog/page.tsx` (grid of all products), `app/catalog/[slug]/page.tsx` (client-rendered product detail with color/size variant selection), `app/login/page.tsx` (Supabase email-OTP auth flow).
-- **`components/`** — `NavBar.tsx` + `ShopDropdown.tsx` form the sticky header and hover-triggered mega menu (menu links point to `/catalog` with query params like `?department=`, `?category=`, `?collection=` — none of these query params are currently read/filtered by `catalog/page.tsx`, so wiring that up is unfinished). `ProductGrid.tsx` renders the catalog grid. `HeroStory.tsx` is the full-bleed home page hero.
-- **`data/products.json`** — the entire product catalog is static JSON, imported directly (`import products from ".../data/products.json"`) rather than fetched. Each product has an array of `variants` (`{ color, size, stock }`); the detail page derives available colors/sizes and stock state from this array — there is no separate variants API or DB table yet.
-- **`lib/supabase.ts`** — creates a Supabase **browser** client (`createBrowserClient` from `@supabase/ssr`) using `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` from `.env.local`. Supabase is currently only used for auth (OTP sign-in in `app/login/page.tsx`); there is no server client, middleware, or session-refresh setup yet, and no database calls beyond auth.
+- **`app/`** — routes. `app/page.tsx` (home), `app/catalog/page.tsx` (server-rendered grid), `app/catalog/[slug]/page.tsx` (server component that fetches one Product and calls `notFound()`, delegating the interactive color/size selection to `components/ProductDetail.tsx`), `app/login/page.tsx` (Supabase email-OTP auth flow), `app/not-found.tsx` (branded 404).
+- **`components/`** — `NavBar.tsx` + `ShopDropdown.tsx` form the sticky header and hover-triggered mega menu (menu links point to `/catalog` with query params like `?department=`, `?category=`, `?collection=` — none of these query params are currently read/filtered by `catalog/page.tsx`, so wiring that up is unfinished, tracked in #10). `ProductGrid.tsx` renders the catalog grid from a `products` prop. `ProductDetail.tsx` is the client half of the detail page. `HeroStory.tsx` is the full-bleed home page hero.
+- **`lib/catalog.ts`** — the only place the storefront queries the catalog. `getProducts()` and `getProductBySlug()` return a `CatalogProduct` with its Variants embedded, in one round trip (PostgREST embeds the `variants_available` view under `products`). Variants come from **`variants_available`, never `variants.stock`** — the raw column is the shelf count and ignores Reservations, so rendering it oversells (ADR 0010). New catalog surfaces extend this module rather than writing their own query.
+- **`lib/database.types.ts`** — generated by `npm run db:types`. Do not hand-edit. Note that view columns (`variants_available`) come out nullable because Postgres views carry no NOT NULL constraints; `lib/catalog.ts` normalises them so components never see `number | null` stock.
+- **`middleware.ts`** — session refresh on every request, matching everything except static assets. Removing this file does not break the build, it silently breaks session persistence, because `lib/supabase/server.ts` swallows the cookie-write error that Server Components always throw.
+
+  **`npm run build` prints a deprecation warning telling you to rename this to `proxy.ts`. Do not do it.** A Proxy file is forced onto the Node.js runtime — Next.js rejects route segment config there with "Proxy always runs on Node.js runtime" — and `@opennextjs/cloudflare` refuses to bundle Node middleware ("Node.js middleware is not currently supported. Consider switching to Edge Middleware."). The rename passes `npm run build` and then **fails `npm run cf:preview`**, which is the runtime this site actually deploys to. Verified both ways on 2026-08-26: as `middleware.ts` the build emits edge middleware (`middleware["/"]` in `.next/server/middleware-manifest.json`) and OpenNext bundles it; as `proxy.ts` it emits `functions["/_middleware"]` with `runtime: "nodejs"` and the Cloudflare build exits 1. This is a good example of why `cf:preview` is not optional.
+- **`lib/supabase/client.ts` / `lib/supabase/server.ts`** — the browser client (`createBrowserClient`) and its server counterpart (`createServerClient`), both using `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` from `.env.local`. **Both use the publishable key**: server-side reads are still meant to pass through RLS (ADR 0004). The secret key appears only where bypassing RLS is the point — the reservation hold (#15) and the Stripe webhook (#18). Create the server client per request; never hoist it to module scope, or one visitor's session leaks into another's request.
 
   **This project uses Supabase's current API keys, not the legacy `anon`/`service_role` JWTs** — it was created after the cutover and legacy keys were never available on it. The browser key is `sb_publishable_...` (`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`); server-side code uses `sb_secret_...` (`SUPABASE_SECRET_KEY`), which bypasses RLS and must never reach a client component or a `NEXT_PUBLIC_` variable. Two gotchas: a secret key sent from a browser is rejected with a 401 (a backstop, not a substitute for care), and neither key type may be sent in an `Authorization: Bearer` header unless it exactly equals the `apikey` header.
 - Cart, profile, and checkout are referenced in the nav (`/cart`, `/profile`) but not yet implemented as routes.
+- **Catalog pages are `export const dynamic = "force-dynamic"`** — deliberately uncached, because stock changes and a stale "Few Left" badge misleads a paying customer. When traffic and catalog size justify it, the upgrade path is `export const revalidate = 60` on the catalog routes plus OpenNext's KV incremental cache in `open-next.config.ts`. That is an October decision, not a launch blocker.
 
 ### Deployment
 
@@ -88,3 +98,13 @@ Currently hidden: `/thermo-nuclear-code-quality-review`, `/improve-codebase-arch
 **Timing rule for the two architecture/quality passes, agreed 2026-08-24:** run `/thermo-nuclear-code-quality-review` on the checkout-and-webhook branch in week 4, before merging — that is the most logic-dense code and the last point where restructuring is cheap. Hold `/improve-codebase-architecture` until **October**, when the Admin Dashboard adds a second consumer of the same Product and Order data and shallow modules start to actually hurt.
 
 **No architecture passes after week 4.** Weeks 5 and 6 are a freeze. A structural refactor that late is the most likely way to break a working store before a hard deadline, and "the code looks better" is not on the launch gate list — RLS, legal pages, webhook idempotency, and the live smoke test are.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
