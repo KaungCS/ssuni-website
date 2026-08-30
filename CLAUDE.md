@@ -26,6 +26,33 @@ npm run db:types    # regenerate lib/database.types.ts from the linked schema
 
 **Do not run `npm run build`, `npm run cf:build` or `npm run cf:preview` while `npm run dev` is running.** They rewrite `.next`, which the dev server is reading from live, and it starts serving half-overwritten chunks: individual routes return 500 while others stay fine, and the log shows Next worker crashes ("Jest worker encountered N child process exceptions") rather than anything resembling the real problem. It looks exactly like a bug in whatever you last edited. Recovery: stop the dev server, `rm -rf .next`, restart. On Windows, confirm it actually died — killing the `npm` wrapper often leaves the `node` child holding port 3000, and that orphan is what gets corrupted. Hit 2026-08-26; cost more debugging time than the feature it masked.
 
+**`npm run cf:preview` leaves an orphaned process tree on Windows unless you kill it deliberately.** Ctrl-C or closing the terminal kills the `npm` wrapper; `workerd.exe`, `esbuild`, and three or four `node` children survive it, keep port 8787, and keep file handles open inside `.open-next`. The next `cf:preview` then dies before it builds anything:
+
+```
+Error: EPERM, Permission denied: \\?\...\.open-next
+    at Object.rmSync (node:fs:1236:18)
+    at Module.initOutputDir (...)
+```
+
+That error names a permission problem, so it reads like antivirus or a broken install. It is neither — a live process is holding the directory the build wants to delete. **Verified 2026-08-30: an orphan tree from 2026-08-26 22:10 had been silently blocking every `cf:preview` for four days**, which means any "verified on `cf:preview`" claim made in that window did not happen. Stopping the preview during that same session reproduced it immediately.
+
+Recovery, and the shutdown to use every time:
+
+```powershell
+# What is actually still running
+Get-Process | Where-Object { $_.ProcessName -match 'workerd|esbuild' } |
+  Select-Object Id, ProcessName
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -match 'wrangler|opennext' } |
+  Select-Object ProcessId, CommandLine
+
+# Kill those PIDs, then confirm
+Stop-Process -Id <pid>,<pid> -Force
+Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue
+```
+
+Match on `wrangler|opennext` rather than killing every `node.exe` — an unfiltered sweep takes out MCP servers, editor language servers, and anything Electron-based that happens to be running.
+
 `npm run lint` should report **5 warnings, 0 errors** (all `<img>`-vs-`next/image`, tracked in issue #11). If it reports thousands, a build-output directory has escaped the ignore list in `eslint.config.mjs` — the patterns are deliberately unanchored (`**/.next/**`, `**/.open-next/**`, …) because root-anchored ones missed a nested build dir once and buried the real findings 800:1. **Add any new build/output directory to both `eslint.config.mjs` and `.gitignore`.**
 
 **After any `npm install` that changes `package-lock.json`, regenerate the lockfile with npm 10 before pushing:**
