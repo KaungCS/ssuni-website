@@ -81,6 +81,14 @@ const variants = await anon("GET", "variants?select=color,size,stock");
 check("anon can select variants", variants.status === 200 && variants.json?.length >= 6,
   `status ${variants.status}, ${variants.json?.length ?? 0} rows (expected >= 6)`);
 
+// Baselines, read from the database rather than hardcoded. Every later check
+// that needs "how many" compares against these. The floors above are the only
+// literals in this file on purpose: a Product the client adds in Supabase Studio
+// must never turn this suite red. (It did, on 2026-08-30, when a third Product
+// appeared and six exact-count assertions failed at once.)
+const productCount = products.json?.length ?? 0;
+const variantCount = variants.json?.length ?? 0;
+
 // -- 2. anon writes are refused ---------------------------------------------
 section("2. Anonymous writes are refused (ADR 0004)");
 
@@ -107,7 +115,8 @@ check("anon INSERT on variants rejected", vIns.status === 401 || vIns.status ===
 
 const still = await anon("GET", "products?select=slug,price&order=slug");
 check("catalog survived the write attempts unchanged",
-  still.json?.length === 2 && Number(still.json.find((p) => p.slug === "rabbit-hole-hoodie")?.price) === 65,
+  still.json?.length === productCount &&
+    Number(still.json.find((p) => p.slug === "rabbit-hole-hoodie")?.price) === 65,
   JSON.stringify(still.json));
 
 // -- 3. reservations are invisible ------------------------------------------
@@ -128,8 +137,9 @@ check("anon INSERT on reservations denied", resvIns.status === 401 || resvIns.st
 section("4. Available Stock (issue #3 done-when)");
 
 const avail = await anon("GET", "variants_available?select=color,size,stock,available_stock&order=color,size");
-check("anon can select variants_available", avail.status === 200 && avail.json?.length === 6,
-  `status ${avail.status}, ${avail.json?.length ?? 0} rows`);
+check("anon can select variants_available",
+  avail.status === 200 && avail.json?.length === variantCount,
+  `status ${avail.status}, ${avail.json?.length ?? 0} rows (expected ${variantCount})`);
 check("available_stock === stock when nothing is reserved",
   avail.json?.every((v) => v.available_stock === v.stock),
   JSON.stringify(avail.json));
@@ -173,20 +183,35 @@ check("test Reservation cleaned up", cleaned?.length === 0, `${cleaned?.length ?
 // -- 7. Hidden hides the Product and its Variants ----------------------------
 section("7. Hidden excludes a Product and its Variants");
 
+// These assert on the Hidden Product itself, not on what is left over. Counting
+// the remainder only works while the catalog is a known size; "did the hoodie
+// and its Variants disappear" is the property CONTEXT.md actually claims, and it
+// holds at any catalog size.
+const hoodieId = (await svc("GET", "products?select=id&slug=eq.rabbit-hole-hoodie")).json?.[0]?.id;
+
 await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: true } });
+
 const hiddenProducts = (await anon("GET", "products?select=slug")).json;
-check("anon sees 1 Product while the hoodie is Hidden", hiddenProducts?.length === 1, JSON.stringify(hiddenProducts));
+check("the Hidden Product vanishes from anon's catalog",
+  Array.isArray(hiddenProducts) &&
+    !hiddenProducts.some((p) => p.slug === "rabbit-hole-hoodie") &&
+    hiddenProducts.length === productCount - 1,
+  JSON.stringify(hiddenProducts));
 
-const hiddenAvail = (await anon("GET", "variants_available?select=color,size")).json;
-check("the Hidden Product's Variants vanish from variants_available too",
-  hiddenAvail?.length === 1 && hiddenAvail[0].color === "Natural", JSON.stringify(hiddenAvail));
+const hiddenAvail = (await anon("GET", `variants_available?select=color,size&product_id=eq.${hoodieId}`)).json;
+check("its Variants vanish from variants_available too",
+  hiddenAvail?.length === 0, `${hiddenAvail?.length ?? "?"} rows`);
 
-const hiddenVariants = (await anon("GET", "variants?select=color,size")).json;
-check("and from variants", hiddenVariants?.length === 1, `${hiddenVariants?.length ?? "?"} rows`);
+const hiddenVariants = (await anon("GET", `variants?select=color,size&product_id=eq.${hoodieId}`)).json;
+check("and from variants", hiddenVariants?.length === 0, `${hiddenVariants?.length ?? "?"} rows`);
 
 await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: false } });
 const restored = (await anon("GET", "products?select=slug")).json;
-check("reverted: anon sees 2 Products again", restored?.length === 2, JSON.stringify(restored));
+check("reverted: the Product is visible again",
+  Array.isArray(restored) &&
+    restored.some((p) => p.slug === "rabbit-hole-hoodie") &&
+    restored.length === productCount,
+  JSON.stringify(restored));
 
 // -- 8. seed is idempotent ---------------------------------------------------
 section("8. Seed idempotency (issue #4)");

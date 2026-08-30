@@ -56,3 +56,26 @@ export function categoryLabel(slug: string | null | undefined): string {
 export function collectionLabel(slug: string | null | undefined): string {
   return COLLECTIONS[slug as CollectionSlug] ?? slug ?? "";
 }
+
+/**
+ * The declared vocabulary, as arrays. These are the single source of truth for
+ * what the database will accept -- the CHECK constraints in
+ * supabase/migrations/20260830120000_taxonomy_declared_values.sql are generated
+ * from exactly these lists, so the two must be changed together until the real
+ * taxonomy tables land (issue #38, ADR 0011).
+ */
+export const DEPARTMENT_SLUGS = Object.keys(DEPARTMENTS) as DepartmentSlug[];
+export const CATEGORY_SLUGS = Object.keys(CATEGORIES) as CategorySlug[];
+export const COLLECTION_SLUGS = Object.keys(COLLECTIONS) as CollectionSlug[];
+
+export function isDepartmentSlug(value: string): value is DepartmentSlug {
+  return value in DEPARTMENTS;
+}
+
+export function isCategorySlug(value: string): value is CategorySlug {
+  return value in CATEGORIES;
+}
+
+export function isCollectionSlug(value: string): value is CollectionSlug {
+  return value in COLLECTIONS;
+}

@@ -1,12 +1,20 @@
+import {
+  isCategorySlug,
+  isCollectionSlug,
+  isDepartmentSlug,
+  type CategorySlug,
+  type CollectionSlug,
+  type DepartmentSlug,
+} from "./taxonomy";
 import { createClient } from "./supabase/server";
 
 /**
- * Catalog reads. Issue #9, per ADR 0002.
+ * Catalog reads. Issues #9 and #10, per ADR 0002.
  *
  * The one place that knows how the storefront asks "what can a shopper see, and
- * how much of it can they actually buy". #10's taxonomy filters and any later
- * catalog surface extend this file rather than writing their own query -- the
- * Available Stock rule below is easy to get subtly wrong in a second place.
+ * how much of it can they actually buy". Any later catalog surface extends this
+ * file rather than writing its own query -- the Available Stock rule below is
+ * easy to get subtly wrong in a second place.
  *
  * Two rules this module exists to enforce:
  *
@@ -127,14 +135,127 @@ function toCatalogProduct(row: RawProduct): CatalogProduct {
   };
 }
 
-/** Every visible Product, newest first. */
-export async function getProducts(): Promise<CatalogProduct[]> {
+// ---------------------------------------------------------------------------
+// Filters (#10)
+// ---------------------------------------------------------------------------
+
+/**
+ * A validated set of catalog filters. Every slug in here is known-good: parsing
+ * happens once, at the URL boundary, so nothing downstream re-validates.
+ *
+ * Dimensions combine with AND ("Women, in Hoodies"); values within one dimension
+ * combine with OR ("Hoodies or Knitwear"). The multi-value shape is here from
+ * the start even though today's nav only ever links one value at a time -- the
+ * filter panel in #37 emits repeated params, and it should not have to reopen
+ * the query layer to do it.
+ */
+export type CatalogFilters = {
+  departments: DepartmentSlug[];
+  categories: CategorySlug[];
+  collections: CollectionSlug[];
+  isNew: boolean;
+};
+
+export const NO_FILTERS: CatalogFilters = {
+  departments: [],
+  categories: [],
+  collections: [],
+  isNew: false,
+};
+
+export function hasActiveFilters(filters: CatalogFilters): boolean {
+  return (
+    filters.departments.length > 0 ||
+    filters.categories.length > 0 ||
+    filters.collections.length > 0 ||
+    filters.isNew
+  );
+}
+
+/** Next hands search params as `string | string[] | undefined` per key. */
+type RawSearchParams = Record<string, string | string[] | undefined>;
+
+function asList(value: string | string[] | undefined): string[] {
+  if (value === undefined) return [];
+  return (Array.isArray(value) ? value : [value]).filter((v) => v.length > 0);
+}
+
+/**
+ * Keeps the values a dimension recognises, and reports whether the dimension was
+ * asked for but understood not at all.
+ *
+ * The distinction matters for what the page does next.
+ * `?category=tees&category=nope` still describes something real, so the unknown
+ * value is dropped and the shopper gets tees. `?category=nope` describes
+ * nothing, and rendering the full catalog there would silently ignore what they
+ * asked for -- so the page 404s instead.
+ */
+function keepDeclared<T extends string>(
+  raw: string[],
+  isDeclared: (value: string) => value is T,
+): { values: T[]; allUnknown: boolean } {
+  const values = [...new Set(raw.filter(isDeclared))];
+  return { values, allUnknown: raw.length > 0 && values.length === 0 };
+}
+
+/**
+ * Validates URL search params into filters, or returns null when the URL names a
+ * dimension whose every value is undeclared -- the page turns that into a 404.
+ *
+ * "Declared" means present in lib/taxonomy.ts. That file is the storefront's
+ * half of the contract; the database enforces the same list with CHECK
+ * constraints, so a Product cannot hold a slug this rejects (ADR 0011).
+ */
+export function parseCatalogFilters(params: RawSearchParams): CatalogFilters | null {
+  const department = keepDeclared(asList(params.department), isDepartmentSlug);
+  const category = keepDeclared(asList(params.category), isCategorySlug);
+  const collection = keepDeclared(asList(params.collection), isCollectionSlug);
+
+  if (department.allUnknown || category.allUnknown || collection.allUnknown) return null;
+
+  // `?new=true` is its own dimension: it maps to the is_new column rather than
+  // to a curated grouping, which is why it is not a Collection. Any other value
+  // is as meaningless as an undeclared slug, and 404s for the same reason.
+  const rawNew = asList(params.new);
+  if (rawNew.length > 0 && !rawNew.every((v) => v === "true" || v === "1")) return null;
+
+  return {
+    departments: department.values,
+    categories: category.values,
+    collections: collection.values,
+    isNew: rawNew.length > 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+// ---------------------------------------------------------------------------
+
+/**
+ * Every visible Product matching the filters, newest first.
+ *
+ * Filtering happens in Postgres, against the indexes the schema already carries
+ * (`products_department_idx`, `products_category_idx`, and a GIN index on
+ * `collections`) -- not by fetching the catalog and filtering in JavaScript. The
+ * seeded catalog is placeholder data (#5) and the real one is substantially
+ * larger; see CLAUDE.md on not sizing decisions by the current row count.
+ */
+export async function getProducts(
+  filters: CatalogFilters = NO_FILTERS,
+): Promise<CatalogProduct[]> {
   const supabase = await createClient();
 
-  const { data, error } = await supabase
-    .from("products")
-    .select(CATALOG_SELECT)
-    .order("created_at", { ascending: false });
+  let query = supabase.from("products").select(CATALOG_SELECT);
+
+  // AND across dimensions: each filter narrows what the previous one left.
+  if (filters.departments.length > 0) query = query.in("department", filters.departments);
+  if (filters.categories.length > 0) query = query.in("category", filters.categories);
+  // `collections` is text[], so membership is array overlap (&&), not equality:
+  // a Product on both "Best Sellers" and "Fall Lookbook" matches either link.
+  if (filters.collections.length > 0) query = query.overlaps("collections", filters.collections);
+  if (filters.isNew) query = query.eq("is_new", true);
+
+  const { data, error } = await query.order("created_at", { ascending: false });
 
   if (error) throw new Error(`Failed to load products: ${error.message}`);
 
