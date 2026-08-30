@@ -81,6 +81,12 @@ Cloudflare Pages/Workers via the OpenNext adapter (ADR 0005), **not** Vercel —
 
 This path is verified, not assumed: `@opennextjs/cloudflare` bundles this app and serves every route on the local workerd runtime. `wrangler dev` also picks up `.env.local` automatically, so `npm run cf:preview` gives good local parity. Some `next.config.ts` options and Node APIs behave differently under workerd than under `next dev` — when adding either, check it through `cf:preview`, not just `npm run dev`.
 
+**Deploys happen on Cloudflare Workers Builds, from a push — not from a laptop** (ADR 0005, amended 2026-08-30), because OpenNext warns on every Windows build that it "could encounter unpredictable failures during runtime" and this is a Windows machine. Project settings are **build command `npm run cf:build`, deploy command `npx wrangler deploy`**. Do not put `npm run build` in front of the build command: `opennextjs-cloudflare build` runs `next build` itself, so it would build Next twice.
+
+**`.env.local` reaches neither the remote build nor the deployed worker.** It is gitignored, so Cloudflare's builder never sees it. Since Next inlines `NEXT_PUBLIC_*` into the bundle at build time, a build missing them **succeeds** and ships a site that cannot reach Supabase — the failure surfaces at runtime, nowhere near its cause. `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` must be set as **build variables** in the Cloudflare project. Server-only values (`SUPABASE_SECRET_KEY`, and the Stripe keys in #26) go in Worker secrets and must never become `NEXT_PUBLIC_`.
+
+Because a merge to `main` deploys, `npm run cf:preview` before merging is the last chance to catch a workerd-only problem in private.
+
 ### Styling conventions
 
 - Tailwind v4 config-less setup: theme tokens (custom colors `ssuni-brown`, `ssuni-light1`, `ssuni-light2`, `ssuni-slate`, `ssuni-sage`; font variables `--font-cinzel`, `--font-belleza`) are declared via `@theme` in `app/globals.css`, not a `tailwind.config.js`.
