@@ -21,6 +21,17 @@ The deciding factor is that `opennextjs-cloudflare build` prints, on every local
 
 **`.env.local` does not deploy, and it no longer reaches the build either.** A local `cf:deploy` read that file; Cloudflare's builder clones the repository, where it is gitignored. Because Next inlines `NEXT_PUBLIC_*` values into the bundle at build time, a build without them **succeeds** and produces a site that cannot reach Supabase — a failure that appears at runtime, far from its cause. `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` must therefore be set as **build** variables in the Cloudflare project, not only as Worker secrets. Server-only values that no build inlines — `SUPABASE_SECRET_KEY`, and the Stripe keys in #26 — belong in Worker secrets, and must never be added as `NEXT_PUBLIC_`.
 
+**Cloudflare keeps two separate stores of environment values, and putting a key in the wrong one fails silently.** Per Cloudflare's documentation, *"build variables will not be accessible at runtime"*. So:
+
+| Value | Store | Because |
+|---|---|---|
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | **Build** variables | Next inlines `NEXT_PUBLIC_*` into the bundle during the build; they are consumed before the Worker ever runs |
+| `SUPABASE_SECRET_KEY`, Stripe keys (#26) | **Worker** secrets (Settings → Variables & Secrets) | No build step reads them; they are needed at request time by the checkout route (#15) and webhook (#18) |
+
+Both mistakes are quiet. A `NEXT_PUBLIC_` value missing at build time yields a successful build and a storefront that cannot reach Supabase. A server-only key placed in build variables is simply absent when the Worker runs — and the code that needs it is the code that takes payments, where "absent" means a customer's money moves and the Order does not record.
+
 **A merge to `main` is now a production deploy.** That is the point, but it changes what merging means: the launch gate in #28 (one real purchase end to end) is a check on what is already live, not a check before going live.
+
+**The Workers Builds API token is a live dependency of deploying.** It authorises `npx wrangler deploy`, and Cloudflare shows *"Configured API token unavailable"* when the token it was using has been deleted, rotated, or rolled — which happens without any change on our side. The fix is to create a new token from the build settings dropdown. Worth checking first whenever a build fails at the deploy step rather than the build step.
 
 Watch the free tier's discouragement of serving a "disproportionate share" of images/large files as the product catalog and Hero Story count grow — may eventually require moving image hosting to a dedicated service (e.g. Cloudflare Images/R2).
