@@ -1,6 +1,17 @@
 import ProductGrid from "@/components/ProductGrid";
+import { getProducts } from "@/lib/catalog";
 
-export default function CatalogPage() {
+// Fully dynamic on purpose: stock changes, and a cached "Few Left" badge is a
+// lie told to a paying customer. The catalog is placeholder seed data today
+// (#5) -- do not size this decision on the current row count. Once the client
+// loads a real catalog and traffic is non-trivial, revisit: `export const
+// revalidate = 60` here, plus OpenNext's KV incremental cache in
+// open-next.config.ts, is the upgrade path.
+export const dynamic = "force-dynamic";
+
+export default async function CatalogPage() {
+  const products = await getProducts();
+
   return (
     <div className="min-h-screen pt-32 pb-24">
       <div className="max-w-7xl mx-auto px-6">
@@ -25,7 +36,7 @@ export default function CatalogPage() {
         </div>
 
         {/* The Grid */}
-        <ProductGrid />
+        <ProductGrid products={products} />
         
       </div>
     </div>
