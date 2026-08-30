@@ -52,3 +52,6 @@ next-env.d.ts
 
 .env.local
 .env.local.bak
+
+# Claude Code: shared project settings are committed; local overrides are not.
+.claude/settings.local.json
