@@ -22,10 +22,10 @@ export default function ShopDropdown({ isOpen, onMouseEnter }: ShopDropdownProps
             Featured
           </h3>
           <ul className="space-y-2.5 text-sm font-belleza text-stone-700">
-            <li><Link href="/catalog?filter=new" className="hover:text-ssuni-brown hover:underline block transition-all">New Arrivals</Link></li>
-            <li><Link href="/catalog?filter=best-sellers" className="hover:text-ssuni-brown hover:underline block transition-all">Best Sellers</Link></li>
+            <li><Link href="/catalog?new=true" className="hover:text-ssuni-brown hover:underline block transition-all">New Arrivals</Link></li>
+            <li><Link href="/catalog?collection=best-sellers" className="hover:text-ssuni-brown hover:underline block transition-all">Best Sellers</Link></li>
             <li><Link href="/catalog?collection=the-rabbit-hole" className="hover:text-ssuni-brown hover:underline block transition-all">The Rabbit Hole Drop</Link></li>
-            <li><Link href="/catalog?filter=lookbook" className="hover:text-ssuni-brown hover:underline block transition-all">Fall Lookbook</Link></li>
+            <li><Link href="/catalog?collection=fall-lookbook" className="hover:text-ssuni-brown hover:underline block transition-all">Fall Lookbook</Link></li>
           </ul>
         </div>
 

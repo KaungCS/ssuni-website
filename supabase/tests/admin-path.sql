@@ -74,9 +74,14 @@ insert into results select 5, 'admin_insert_variant_allowed', (select count(*) f
 reset role;
 update public.products set is_hidden = true where slug = 'signature-canvas-tote';
 
+-- Asserted on the Hidden Product itself rather than on a catalog count: the
+-- client adds Products in Supabase Studio (#5), and a literal count makes this
+-- suite fail the day they do. It did, on 2026-08-30, when a third Product
+-- appeared.
 select pg_temp.become_subject();
 set local role authenticated;
-insert into results select 6, 'admin_sees_hidden_products', (select count(*) from public.products) = 2, true;
+insert into results select 6, 'admin_sees_hidden_products',
+  exists (select 1 from public.products where slug = 'signature-canvas-tote'), true;
 
 -- Clear the claim before dropping to anon. A real anonymous request carries no
 -- `sub`; leaving the admin's claim set makes auth.uid() -- and so is_admin() --
@@ -84,7 +89,8 @@ insert into results select 6, 'admin_sees_hidden_products', (select count(*) fro
 -- any request the API can actually receive.
 select set_config('request.jwt.claims', '', true);
 set local role anon;
-insert into results select 7, 'anon_does_not_see_hidden', (select count(*) from public.products) = 1, true;
+insert into results select 7, 'anon_does_not_see_hidden',
+  not exists (select 1 from public.products where slug = 'signature-canvas-tote'), true;
 insert into results select 8, 'anon_is_not_admin', private.is_admin() = false, true;
 
 -- 6. Reservations stay off-limits even to an admin: they are server-only, not
