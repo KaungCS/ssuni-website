@@ -180,14 +180,52 @@ await svc("DELETE", `reservations?id=eq.${heldId}`);
 const cleaned = (await svc("GET", "reservations?select=id")).json;
 check("test Reservation cleaned up", cleaned?.length === 0, `${cleaned?.length ?? "?"} rows remain`);
 
-// -- 7. Hidden hides the Product and its Variants ----------------------------
-section("7. Hidden excludes a Product and its Variants");
+// -- 7. Hidden hides the Product, its Variants, and its taxonomy terms -------
+section("7. Hidden excludes a Product, its Variants, and its facet terms");
 
 // These assert on the Hidden Product itself, not on what is left over. Counting
 // the remainder only works while the catalog is a known size; "did the hoodie
 // and its Variants disappear" is the property CONTEXT.md actually claims, and it
 // holds at any catalog size.
 const hoodieId = (await svc("GET", "products?select=id&slug=eq.rabbit-hole-hoodie")).json?.[0]?.id;
+
+// catalog_facets (#37) is a derived list, so the invariant that holds at any
+// catalog size is: it says exactly what anon's own visible Products say. If the
+// view ever ran with definer rights it would see through RLS, keep offering a
+// Hidden Product's terms, and this equality would break -- which is the whole
+// reason the migration takes security_invoker. See its comment block.
+const facetTerms = async () => {
+  const rows = (await anon("GET", "catalog_facets?select=dimension,value")).json ?? [];
+  return new Set(rows.map((r) => `${r.dimension}:${r.value}`));
+};
+
+const termsAnonCanSee = async () => {
+  const rows = (await anon("GET", "products?select=department,category,collections")).json ?? [];
+  const terms = new Set();
+  for (const p of rows) {
+    if (p.department) terms.add(`department:${p.department}`);
+    if (p.category) terms.add(`category:${p.category}`);
+    for (const c of p.collections ?? []) terms.add(`collection:${c}`);
+  }
+  return terms;
+};
+
+const sameTerms = (a, b) => a.size === b.size && [...a].every((t) => b.has(t));
+
+const facetsBefore = await facetTerms();
+check("catalog_facets matches the terms anon's visible Products carry",
+  sameTerms(facetsBefore, await termsAnonCanSee()),
+  JSON.stringify([...facetsBefore]));
+
+// Which of the hoodie's terms no other visible Product carries. Computed rather
+// than hardcoded: the client adds Products between sessions, and a term that is
+// exclusive today may be shared next week without that being a failure.
+const hoodie = (await svc("GET", "products?select=department,category,collections&slug=eq.rabbit-hole-hoodie")).json?.[0];
+const hoodieTerms = new Set([
+  ...(hoodie?.department ? [`department:${hoodie.department}`] : []),
+  ...(hoodie?.category ? [`category:${hoodie.category}`] : []),
+  ...(hoodie?.collections ?? []).map((c) => `collection:${c}`),
+]);
 
 await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: true } });
 
@@ -205,6 +243,27 @@ check("its Variants vanish from variants_available too",
 const hiddenVariants = (await anon("GET", `variants?select=color,size&product_id=eq.${hoodieId}`)).json;
 check("and from variants", hiddenVariants?.length === 0, `${hiddenVariants?.length ?? "?"} rows`);
 
+const facetsWhileHidden = await facetTerms();
+check("catalog_facets still matches what anon can see, with the Product Hidden",
+  sameTerms(facetsWhileHidden, await termsAnonCanSee()),
+  JSON.stringify([...facetsWhileHidden]));
+
+// The sharper claim, when the data supports it: a term nothing else carries is
+// gone from the drawer entirely, so no shopper can tick a filter whose only
+// Product is Hidden. Shared terms must survive -- hiding one Product must not
+// empty a facet other Products still populate.
+const exclusive = [...hoodieTerms].filter((t) => !facetsWhileHidden.has(t));
+const shared = [...hoodieTerms].filter((t) => facetsWhileHidden.has(t));
+if (exclusive.length > 0) {
+  check("a term only the Hidden Product carried is gone from the facets",
+    exclusive.every((t) => facetsBefore.has(t)), JSON.stringify(exclusive));
+} else {
+  console.log("         (no term was exclusive to the hoodie in the current catalog;");
+  console.log("          the equality checks above still cover the Hidden rule)");
+}
+check("terms other visible Products also carry survive the hide",
+  shared.every((t) => facetsBefore.has(t)), JSON.stringify(shared));
+
 await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: false } });
 const restored = (await anon("GET", "products?select=slug")).json;
 check("reverted: the Product is visible again",
@@ -212,6 +271,10 @@ check("reverted: the Product is visible again",
     restored.some((p) => p.slug === "rabbit-hole-hoodie") &&
     restored.length === productCount,
   JSON.stringify(restored));
+
+const facetsAfter = await facetTerms();
+check("reverted: its terms are back in the facets",
+  sameTerms(facetsAfter, facetsBefore), JSON.stringify([...facetsAfter]));
 
 // -- 8. seed is idempotent ---------------------------------------------------
 section("8. Seed idempotency (issue #4)");

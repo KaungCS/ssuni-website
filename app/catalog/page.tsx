@@ -1,11 +1,15 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import CatalogFilterDrawer from "@/components/CatalogFilterDrawer";
 import ProductGrid from "@/components/ProductGrid";
 import {
+  catalogUrlKey,
+  getCatalogFacets,
   getProducts,
   hasActiveFilters,
   parseCatalogFilters,
+  parseCatalogSort,
   type CatalogFilters,
 } from "@/lib/catalog";
 import { categoryLabel, collectionLabel, departmentLabel } from "@/lib/taxonomy";
@@ -45,6 +49,22 @@ function headingFor(labels: string[]): string {
 }
 
 /**
+ * What the shopper is looking at -- and nothing else. There is deliberately no
+ * subtitle at exactly one filter, because headingFor() has already said it and
+ * repeating it is noise.
+ *
+ * The item count used to live here, and only in the one-filter case, where it
+ * was filling the space a redundant label would have occupied. That made a
+ * counting feature look half-missing from the other two states. It now has its
+ * own element in the utility bar, present at every filter state (#37).
+ */
+function subtitleFor(labels: string[]): string | null {
+  if (labels.length === 0) return "The complete collection.";
+  if (labels.length === 1) return null;
+  return labels.join(" · ");
+}
+
+/**
  * A filtered view is a different page as far as a bookmark, a shared link, or a
  * browser tab is concerned, so the title has to say which one it is.
  *
@@ -71,25 +91,31 @@ export default async function CatalogPage({
 }: {
   searchParams: SearchParams;
 }) {
-  const filters = parseCatalogFilters(await searchParams);
+  const params = await searchParams;
+  const filters = parseCatalogFilters(params);
 
   // A URL naming a category that does not exist is a real 404, the same way an
   // unknown Product slug is. Rendering the whole catalog instead would quietly
   // ignore what the shopper asked for; rendering an empty state would imply the
   // category is real and temporarily bare. Note that individual unknown values
   // are dropped rather than fatal -- see parseCatalogFilters.
+  //
+  // An unrecognised `?sort=` does NOT 404; it falls back. See parseCatalogSort
+  // for why the two are treated differently.
   if (!filters) notFound();
 
-  const products = await getProducts(filters);
+  const sort = parseCatalogSort(params);
+
+  // Independent reads, so pay for one round trip rather than two in series.
+  const [products, facets] = await Promise.all([
+    getProducts(filters, sort),
+    getCatalogFacets(),
+  ]);
+
   const labels = activeLabels(filters);
   const filtered = hasActiveFilters(filters);
-
-  const subtitle =
-    labels.length === 0
-      ? "The complete collection."
-      : labels.length === 1
-        ? `${products.length} ${products.length === 1 ? "piece" : "pieces"}`
-        : labels.join(" · ");
+  const subtitle = subtitleFor(labels);
+  const count = `${products.length} ${products.length === 1 ? "piece" : "pieces"}`;
 
   return (
     <div className="min-h-screen pt-32 pb-24">
@@ -101,12 +127,18 @@ export default async function CatalogPage({
             <h1 className="font-cinzel text-4xl md:text-5xl text-ssuni-brown mb-2">
               {headingFor(labels)}
             </h1>
-            <p className="font-belleza text-stone-600 tracking-wide">
-              {subtitle}
-            </p>
+            {subtitle && (
+              <p className="font-belleza text-stone-600 tracking-wide">
+                {subtitle}
+              </p>
+            )}
           </div>
 
           <div className="mt-6 md:mt-0 flex items-center gap-6">
+            {/* Always present, at every filter state including none. */}
+            <span className="font-belleza text-sm text-stone-500 tracking-wide">
+              {count}
+            </span>
             {filtered && (
               <Link
                 href="/catalog"
@@ -115,10 +147,12 @@ export default async function CatalogPage({
                 Clear filters
               </Link>
             )}
-            {/* Inert until the filter and sort drawer lands in #37. */}
-            <button className="font-belleza uppercase tracking-widest text-sm text-ssuni-brown hover:opacity-70 transition-opacity border-b border-ssuni-brown pb-1">
-              Filter &amp; Sort +
-            </button>
+            <CatalogFilterDrawer
+              facets={facets}
+              filters={filters}
+              sort={sort}
+              paramsKey={catalogUrlKey(filters, sort)}
+            />
           </div>
         </div>
 

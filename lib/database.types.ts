@@ -181,6 +181,13 @@ export type Database = {
       }
     }
     Views: {
+      catalog_facets: {
+        Row: {
+          dimension: string | null
+          value: string | null
+        }
+        Relationships: []
+      }
       variants_available: {
         Row: {
           available_stock: number | null
