@@ -20,8 +20,12 @@ _Avoid_: lock, allocation, backorder
 A Variant's stock count minus its unexpired Reservations — what a shopper can actually buy right now, and what the storefront displays. Distinct from stock, which is the physical count on the shelf.
 
 **Cart**:
-The set of Variants a shopper intends to buy. Held locally in the browser, not tied to an account; login is only required at checkout.
+The Cart Items a shopper intends to buy. Held locally in the browser, not tied to an account; login is only required at checkout.
 _Avoid_: Bag, basket
+
+**Cart Item**:
+A Variant plus a quantity, as one line of a Cart. Holds a reference to the Variant, never a copy of its price or stock — those are read live, so what the Cart displays and what Stripe charges cannot drift apart. Parallels an Order Item, which is the same idea after payment.
+_Avoid_: line item, cart line
 
 **Department**:
 The broadest taxonomy dimension a Product can be filtered by (e.g. Women, Men, Unisex). Distinct from Category and Collection.
