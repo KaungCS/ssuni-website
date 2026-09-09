@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 export default defineConfig({
   test: {
     environment: "node",
+    setupFiles: ["./vitest.setup.ts"],
     // Default environment is node. The one test that needs a DOM -- the Cart
     // provider's hydration order, where a save effect can overwrite a stored
     // Cart before the load effect lands -- opts in per-file with a
