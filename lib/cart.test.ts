@@ -162,6 +162,18 @@ describe("parseResolveRequest", () => {
     expect(parseResolveRequest({ variantIds: tooMany })).toBeNull();
   });
 
+  it("drops ids that are not UUIDs, rather than letting Postgres reject the query", () => {
+    // Variant ids are uuid columns. Passing a malformed one makes PostgREST
+    // fail the whole request ("invalid input syntax for type uuid"), which
+    // turns one corrupted localStorage entry into a 500 and a Cart page stuck
+    // on its error state. Dropped ids simply resolve to nothing, which
+    // reconcile already reports as unavailable.
+    expect(parseResolveRequest({ variantIds: [HOODIE_ESPRESSO_M, "not-a-real-id"] })).toEqual([
+      HOODIE_ESPRESSO_M,
+    ]);
+    expect(parseResolveRequest({ variantIds: ["not-a-real-id"] })).toEqual([]);
+  });
+
   it("collapses duplicates rather than querying the same Variant twice", () => {
     expect(
       parseResolveRequest({ variantIds: [HOODIE_ESPRESSO_M, HOODIE_ESPRESSO_M] }),

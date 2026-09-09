@@ -142,6 +142,13 @@ export function reconcile(
 export const MAX_CART_ITEMS = 50;
 
 /**
+ * Variant ids are `uuid` columns. A malformed one makes PostgREST reject the
+ * whole request -- "invalid input syntax for type uuid" -- so one corrupted
+ * localStorage entry would turn the Cart into a 500.
+ */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
  * Validate a POST /api/cart/resolve body, returning the variant ids to look up
  * or null if the body is not a request we are willing to serve.
  *
@@ -157,9 +164,15 @@ export function parseResolveRequest(body: unknown): string[] | null {
   if (variantIds.length > MAX_CART_ITEMS) return null;
   if (variantIds.some((id) => typeof id !== "string" || id.length === 0)) return null;
 
+  // Malformed ids are dropped rather than rejected: they resolve to nothing,
+  // and `reconcile` already reports an absent Variant as unavailable, so a
+  // corrupted Cart degrades to "this piece is no longer available" instead of
+  // failing the request for every other line in it. The cap above is checked
+  // first, so a flood of junk ids is still refused outright.
+  //
   // Duplicates are the client's problem to avoid, not a reason to reject a
   // Cart -- but they must not reach the query as repeated terms.
-  return Array.from(new Set(variantIds as string[]));
+  return Array.from(new Set((variantIds as string[]).filter((id) => UUID.test(id))));
 }
 
 // ---------------------------------------------------------------------------

@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import type { CatalogProduct } from "@/lib/catalog";
+import { useCart } from "./CartProvider";
 
 // A quick helper to map color names to hex codes/Tailwind classes for the swatches
 const getColorSwatch = (colorName: string) => {
@@ -24,12 +25,16 @@ const getColorSwatch = (colorName: string) => {
  * Stock here is Available Stock (ADR 0010), already computed by the database --
  * see lib/catalog.ts. Do not swap it for a raw stock count.
  *
- * The Add to Cart button is still inert. #12 adds the Cart provider and #13
- * wires this button to it.
+ * Adding clamps to Available Stock, which is a convenience and not a gate: the
+ * number is a snapshot from page load, /cart re-checks it on every visit, and
+ * the atomic check-and-hold in #15 is the only real authority on whether stock
+ * can be sold (ADR 0010).
  */
 export default function ProductDetail({ product }: { product: CatalogProduct }) {
   const [selectedColor, setSelectedColor] = useState<string | null>(null);
   const [selectedSize, setSelectedSize] = useState<string | null>(null);
+  const [addedVariantId, setAddedVariantId] = useState<string | null>(null);
+  const { add, items } = useCart();
 
   const availableColors = useMemo(() => {
     const colors = product.variants.map((v) => v.color);
@@ -44,6 +49,11 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
   const selectedVariant = useMemo(() => {
     return availableSizes.find((v) => v.size === selectedSize);
   }, [availableSizes, selectedSize]);
+
+  // Derived, not stored: the confirmation belongs to one selection, so it
+  // disappears when the shopper picks a different colour or size without any
+  // effect having to reset it.
+  const justAdded = addedVariantId !== null && addedVariantId === selectedVariant?.id;
 
   return (
     <div className="min-h-screen pt-32 pb-24">
@@ -151,11 +161,34 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
 
           {/* Add to Cart Button */}
           <button
+            onClick={() => {
+              if (!selectedVariant) return;
+
+              // Clamp at add-time so the Cart cannot be built past what is
+              // sellable. /cart re-checks against fresh Available Stock, and
+              // #15 holds the stock for real -- this only spares the shopper a
+              // quantity that was never going to survive either.
+              const alreadyInCart =
+                items.find((item) => item.variantId === selectedVariant.id)?.quantity ?? 0;
+              if (alreadyInCart >= selectedVariant.availableStock) return;
+
+              add(selectedVariant.id, 1);
+              setAddedVariantId(selectedVariant.id);
+            }}
             disabled={!selectedColor || !selectedSize || selectedVariant?.availableStock === 0}
-            className="w-full bg-ssuni-brown text-ssuni-light1 py-4 font-belleza uppercase tracking-widest text-sm hover:bg-ssuni-slate transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-ssuni-brown"
+            className="w-full bg-ssuni-brown text-ssuni-light1 py-4 font-belleza uppercase tracking-widest text-sm hover:bg-ssuni-slate transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-ssuni-brown cursor-pointer"
           >
             {selectedVariant?.availableStock === 0 ? "Out of Stock" : "Add to Cart"}
           </button>
+
+          {justAdded && (
+            <p className="mt-4 font-belleza text-sm text-ssuni-slate text-center">
+              Added to your cart.{" "}
+              <Link href="/cart" className="text-ssuni-brown underline hover:opacity-70">
+                View cart
+              </Link>
+            </p>
+          )}
 
           {/* Product Accords / Extra Details */}
           <div className="mt-12 border-t border-ssuni-slate/20 pt-6">

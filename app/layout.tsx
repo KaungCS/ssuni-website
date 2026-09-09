@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Cinzel, Belleza } from "next/font/google";
 import "./globals.css";
 import NavBar from "@/components/NavBar"; // Import the new NavBar component
+import { CartProvider } from "@/components/CartProvider";
 
 const cinzel = Cinzel({
   subsets: ["latin"],
@@ -31,12 +32,19 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${cinzel.variable} ${belleza.variable}`}>
       <body className="font-belleza antialiased selection:bg-ssuni-brown selection:text-ssuni-light1 flex flex-col min-h-screen">
-        
-        {/* Insert the decoupled NavBar component */}
-        <NavBar />
 
-        {/* Main Page Content */}
-        <main className="flex-grow">{children}</main>
+        {/* The Cart is guest-local and lives in localStorage (ADR 0001), so it
+            wraps the whole app rather than any one route: the nav badge and
+            /cart read the same provider. */}
+        <CartProvider>
+
+          {/* Insert the decoupled NavBar component */}
+          <NavBar />
+
+          {/* Main Page Content */}
+          <main className="flex-grow">{children}</main>
+
+        </CartProvider>
 
         {/* The Restored Footer */}
         <footer className="bg-ssuni-light2 py-12 border-t border-ssuni-light1">
