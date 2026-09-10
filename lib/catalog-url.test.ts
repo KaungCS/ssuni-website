@@ -112,6 +112,17 @@ describe("parseCatalogFilters", () => {
     expect(parseCatalogFilters({ new: "false" }, VOCABULARY)).toBeNull();
   });
 
+  it("does not mistake an inherited object property for a declared Term", () => {
+    // Not a hypothetical, and not preserved behaviour: before #50 the
+    // vocabulary was an object and membership was tested with `in`, which walks
+    // the prototype chain. `?category=constructor` therefore validated, and the
+    // shopper got an empty catalog instead of a 404. Matching against a list
+    // closed that by accident; this pins it shut on purpose.
+    expect(parseCatalogFilters({ category: "constructor" }, VOCABULARY)).toBeNull();
+    expect(parseCatalogFilters({ department: "toString" }, VOCABULARY)).toBeNull();
+    expect(parseCatalogFilters({ collection: "hasOwnProperty" }, VOCABULARY)).toBeNull();
+  });
+
   it("accepts a vocabulary with an empty dimension, and declares nothing real in it", () => {
     // #49 makes this reachable: a client can delete their last Collection.
     // A URL naming one then 404s, which is correct -- but a bare catalog must

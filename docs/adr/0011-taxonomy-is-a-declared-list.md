@@ -18,4 +18,4 @@ Because the storefront and the database now enforce the same list from two place
 
 ---
 
-**Amended 2026-09-09 by [ADR 0013](./0013-taxonomy-tables-and-the-vocabulary-argument.md).** The two questions this ADR left open — the shape of the `collections` foreign key, and whether the tables are worth the session — are both settled there: a `product_collections` join table, built in issue #38.
+**Amended 2026-09-09 by [ADR 0013](./0013-taxonomy-tables-and-the-vocabulary-argument.md).** The two questions this ADR left open — the shape of the `collections` foreign key, and whether the tables are worth the session — are both settled there: a `product_collections` join table, built in issue #49 (which supersedes #38, the earlier framing of the same work).

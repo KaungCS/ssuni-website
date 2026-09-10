@@ -116,7 +116,8 @@ function keepDeclared(
   raw: string[],
   declared: readonly string[],
 ): { values: string[]; allUnknown: boolean } {
-  const values = [...new Set(raw.filter((value) => declared.includes(value)))];
+  const declaredSet = new Set(declared);
+  const values = [...new Set(raw.filter((value) => declaredSet.has(value)))];
   return { values, allUnknown: raw.length > 0 && values.length === 0 };
 }
 
