@@ -121,6 +121,17 @@ This path is verified, not assumed: `@opennextjs/cloudflare` bundles this app an
 
 **Deploys happen on Cloudflare Workers Builds, from a push — not from a laptop** (ADR 0005, amended 2026-08-30), because OpenNext warns on every Windows build that it "could encounter unpredictable failures during runtime" and this is a Windows machine. Project settings are **build command `npm run cf:build`, deploy command `npx wrangler deploy`**. Do not put `npm run build` in front of the build command: `opennextjs-cloudflare build` runs `next build` itself, so it would build Next twice.
 
+**A green build is not a deploy.** Both settings above live in the dashboard, not in this repo, so they drift out of sync with this file silently — and both failures land *after* the log says `Success: Build command completed`:
+
+| Setting drifts to | What you see | Why |
+|---|---|---|
+| Build command `npm run build` | Deploy step fails: `The entry-point file at ".open-next/worker.js" was not found` | `next build` writes `.next/` and stops. Only `opennextjs-cloudflare build` writes the worker that `wrangler.jsonc` names as `main`. The error names a path, so it reads like a missing file in this repo. Hit 2026-09-09 |
+| `npx wrangler versions upload` in the **Deploy command** field | Build and deploy both green; the live site keeps serving the old version | That command uploads a version without putting it on traffic. It belongs in the **Version command** field, which is what Workers Builds runs for every non-production branch — which is also why a branch build can never affect the live site |
+
+Build configuration holds three commands — **Build command**, **Deploy command** (production branch), **Version command** (every other branch) — and a build's own page reports the settings that build actually ran with, which is the thing to read when a build disagrees with the configuration.
+
+After a deploy that should have changed something, confirm the change on the live URL. The dashboard showing no failure is not that confirmation.
+
 **`.env.local` reaches neither the remote build nor the deployed worker.** It is gitignored, so Cloudflare's builder never sees it. Cloudflare keeps **two separate stores** and, in their words, *"build variables will not be accessible at runtime"* — putting a value in the wrong one fails silently in both directions:
 
 | Value | Store | Why |
