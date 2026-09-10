@@ -13,6 +13,8 @@ npm run dev      # start dev server (Next.js, localhost:3000)
 npm run build    # production build
 npm run start    # run production build
 npm run lint     # eslint (flat config, eslint-config-next)
+npm test         # vitest, run once
+npm run test:watch
 
 npm run cf:build    # bundle a Cloudflare worker via OpenNext
 npm run cf:preview  # build + serve the worker on the real workerd runtime
@@ -30,19 +32,32 @@ npm run db:types    # regenerate lib/database.types.ts from the linked schema
 
 **Do not run `npm run build`, `npm run cf:build` or `npm run cf:preview` while `npm run dev` is running.** They rewrite `.next`, which the dev server is reading from live, and it starts serving half-overwritten chunks: individual routes return 500 while others stay fine, and the log shows Next worker crashes ("Jest worker encountered N child process exceptions") rather than anything resembling the real problem. It looks exactly like a bug in whatever you last edited. Recovery: stop the dev server, `rm -rf .next`, restart. On Windows, confirm it actually died — killing the `npm` wrapper often leaves the `node` child holding port 3000, and that orphan is what gets corrupted. Hit 2026-08-26; cost more debugging time than the feature it masked.
 
-`npm run lint` should report **5 warnings, 0 errors** (all `<img>`-vs-`next/image`, tracked in issue #11). If it reports thousands, a build-output directory has escaped the ignore list in `eslint.config.mjs` — the patterns are deliberately unanchored (`**/.next/**`, `**/.open-next/**`, …) because root-anchored ones missed a nested build dir once and buried the real findings 800:1. **Add any new build/output directory to both `eslint.config.mjs` and `.gitignore`.**
+`npm run lint` should report **6 warnings, 0 errors** (all `<img>`-vs-`next/image`, tracked in issue #11). If it reports thousands, a build-output directory has escaped the ignore list in `eslint.config.mjs` — the patterns are deliberately unanchored (`**/.next/**`, `**/.open-next/**`, …) because root-anchored ones missed a nested build dir once and buried the real findings 800:1. **Add any new build/output directory to both `eslint.config.mjs` and `.gitignore`.**
 
-**After any `npm install` that changes `package-lock.json`, regenerate the lockfile with npm 10 before pushing:**
+**After any `npm install` that changes `package-lock.json`, regenerate the lockfile with npm 10 before pushing — and do it after the *last* install, not the first:**
 
 ```bash
-npx npm@10.9.2 install --package-lock-only
+rm package-lock.json && npx npm@10.9.2 install --package-lock-only
 ```
+
+**The `rm` is required.** With a `package-lock.json` already present, npm 10 now dies with `Cannot read properties of null (reading 'edgesOut')` — reproduced 2026-09-09 under Node 24 *and* a clean Node 22 (npm 10.9.3), with and without `node_modules`. The older recipe without the `rm` no longer works.
+
+**Regenerating once in the middle of a session is worthless.** Every subsequent `npm install` under npm 11 re-prunes the lockfile. On 2026-09-09 the lockfile was correctly regenerated, then two more installs silently undid it, and the remote build failed at `npm clean-install` with *"Missing: `@emnapi/runtime` from lock file"* — before touching a line of app code. **Verify, don't assume:**
+
+```bash
+npm ci --dry-run          # must exit 0 under npm 11
+# and under npm 10, which is what Cloudflare runs
+```
+
+**This machine is `arm64` (Windows on ARM)** — `node -e "console.log(process.arch)"` says so. Cloudflare builds on **x64 Linux**. So local installs resolve a different set of optional per-platform native binaries than the remote needs, which is the root of this entire class of failure and also why an unsigned ARM64 `@ast-grep/napi` once got blocked by Application Control (below).
+
+**Dependencies carrying many optional per-platform binaries are the danger.** `vitest` is pinned to **3.x deliberately**: vitest 4 pulls vite 8, and with it `rolldown` and `esbuild@0.28`, whose optional binary sets npm 10 and npm 11 resolve differently — which breaks the shared lockfile outright. A lockfile npm 10 resolves from scratch is then rejected by npm 11, and merging the two is rejected by both. **Do not upgrade vitest to 4 without re-verifying `npm ci --dry-run` under both npm versions.**
 
 Cloudflare's build image runs **npm 10.9.2** and there is no way to change it — `NODE_VERSION`, `.nvmrc` and `.node-version` set the Node version, and `YARN_VERSION` / `PNPM_VERSION` exist, but npm has no equivalent override. Local npm 11 prunes two optional transitive entries (`@emnapi/runtime` and `@emnapi/core`, reached through `@img/sharp-wasm32` → `sharp` → Next.js), and npm 10's `npm ci` then refuses the lockfile outright: *"can only install packages when your package.json and package-lock.json are in sync"*. The remote build fails during dependency install, before it ever reaches the app, so nothing in the error points at this repo.
 
 A lockfile generated by npm 10 satisfies **both** versions — `npm ci` passes on 10.9.2 and 11.6.2, and `ci` never rewrites it. Only `npm install` under npm 11 re-prunes it. Verified 2026-08-30 after a remote build failed this way.
 
-There is no test suite configured in this project yet. **Vitest arrives with the Cart provider (#12) and the checkout route (#15)** — that is the first code where a test earns its keep, and setting one up before then would spend schedule on presentational components. See the workflow below for what it covers when it lands, and issue #32 for why the scope is narrow.
+**Vitest 3 landed with the Cart provider (#12)** — pinned to 3.x for lockfile reasons; see the npm section above. It runs `node`-only by default and covers `lib/cart.ts`, plus exactly one jsdom file for the Cart's hydration; `vitest.config.ts` explains why the DOM environment is opted into per-file rather than switched on globally. **The checkout route (#15) and the Stripe webhook (#18, #30) extend this suite rather than starting their own** — those, with Cart math, are the whole of what issue #32 requires tests for. Presentational components stay exempt: see the workflow below, and #32 for why the scope is deliberately narrow.
 
 ## Development workflow
 
@@ -74,6 +89,14 @@ Next.js 16 App Router site (React 19, TypeScript, Tailwind CSS v4) for SSUNI, a 
 
   **This module can never be imported by a client component.** It reaches `next/headers` through `lib/supabase/server.ts`, so a `"use client"` file importing any runtime value from it fails the build with *"You're importing a module that depends on next/headers"*. Type-only imports are erased and are fine; a single value import is not.
 
+- **`lib/cart.ts`** — the Cart's money and quantity math, as pure functions. Imports nothing: availability arrives as a plain argument, so every rule about what a shopper is charged is testable without a browser or a database. **The subtotal is computed here and nowhere else** — a second implementation in a component is how `/cart` and checkout come to disagree about a price. A **Cart Item** is `{variantId, quantity}` and never stores a price (ADR 0001, amended 2026-09-08): checkout builds Stripe `price_data` from live Supabase rows (ADR 0008), so a stored price would let the Cart display one number while Stripe charges another. Money is summed in **integer cents** — `19.99 * 3` is `59.97000000000001` in binary floating point, and that tail would reach both the shopper's screen and the amount charged.
+
+  A Variant absent from the availability map is reported `unavailable`, which is not an edge case: `variants_available` ends in `where not p.is_hidden`, so the client hiding a Product in Supabase Studio drops its Variants from the view. Such a row **stays visible and out of the subtotal rather than being deleted** — the Cart never silently mutates itself. None of this is a correctness gate; the atomic check-and-hold of ADR 0010 (#15) is the only authority on whether stock can actually be sold.
+
+- **`components/CartProvider.tsx`** — reads `localStorage` through **`useSyncExternalStore`, not a load effect plus a save-on-change effect**. That obvious shape has a bug: the save effect also runs on mount with the empty initial state and writes `[]` over the shopper's stored Cart. The final contents recover a moment later, so asserting on them proves nothing — the damage is the transient write, which another tab or a reload landing in that window reads and keeps. Reading through an external store removes the bug by construction and gives cross-tab sync for free. `components/CartProvider.test.tsx` records every write to the Cart key and fails if any is an empty Cart; it is the only jsdom test in the repo.
+
+- **`app/api/cart/resolve/route.ts`** — `POST`, never `GET`. The response carries live prices and Available Stock, and a cacheable response is a stale-price bug. It returns **facts and never verdicts**, so it holds no logic — even its input validation is `parseResolveRequest` in `lib/cart.ts`, which is what keeps it covered by the pure test seam and caps how many ids one request can turn into a Supabase `.in()` filter.
+
 - **`lib/catalog-url.ts`** — what a catalog URL *means*, split out of `lib/catalog.ts` precisely so the drawer can import it. Pure: it imports nothing but `lib/taxonomy.ts`. `lib/catalog.ts` re-exports all of it, so server-side callers keep treating `@/lib/catalog` as the single door; client components must import from `@/lib/catalog-url` directly.
 
   `parseCatalogFilters()` validates search params once, at the URL boundary, so nothing downstream re-validates. Dimensions combine with AND, values within a dimension with OR. A dimension whose values are *all* undeclared returns `null` and the page 404s; an individual unknown value alongside a valid one is dropped instead. Filtering and sorting both run in Postgres against the existing indexes — never fetch-then-filter in JS.
@@ -87,7 +110,7 @@ Next.js 16 App Router site (React 19, TypeScript, Tailwind CSS v4) for SSUNI, a 
 - **`lib/supabase/client.ts` / `lib/supabase/server.ts`** — the browser client (`createBrowserClient`) and its server counterpart (`createServerClient`), both using `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` from `.env.local`. **Both use the publishable key**: server-side reads are still meant to pass through RLS (ADR 0004). The secret key appears only where bypassing RLS is the point — the reservation hold (#15) and the Stripe webhook (#18). Create the server client per request; never hoist it to module scope, or one visitor's session leaks into another's request.
 
   **This project uses Supabase's current API keys, not the legacy `anon`/`service_role` JWTs** — it was created after the cutover and legacy keys were never available on it. The browser key is `sb_publishable_...` (`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`); server-side code uses `sb_secret_...` (`SUPABASE_SECRET_KEY`), which bypasses RLS and must never reach a client component or a `NEXT_PUBLIC_` variable. Two gotchas: a secret key sent from a browser is rejected with a 401 (a backstop, not a substitute for care), and neither key type may be sent in an `Authorization: Bearer` header unless it exactly equals the `apikey` header.
-- Cart, profile, and checkout are referenced in the nav (`/cart`, `/profile`) but not yet implemented as routes.
+- `/profile` and checkout are referenced in the nav but not yet implemented as routes. `/cart` exists as of #12/#13; its Checkout button is deliberately inert until #15.
 - **Catalog pages are `export const dynamic = "force-dynamic"`** — deliberately uncached, because stock changes and a stale "Few Left" badge misleads a paying customer. When traffic and catalog size justify it, the upgrade path is `export const revalidate = 60` on the catalog routes plus OpenNext's KV incremental cache in `open-next.config.ts`. That is an October decision, not a launch blocker.
 
 ### Deployment

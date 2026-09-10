@@ -261,3 +261,90 @@ export async function getProductBySlug(slug: string): Promise<CatalogProduct | n
 
   return data ? toCatalogProduct(data as RawProduct) : null;
 }
+
+// ---------------------------------------------------------------------------
+// Cart resolution (#12, #13)
+// ---------------------------------------------------------------------------
+
+/** One Cart row's worth of live catalog data. */
+export type ResolvedVariant = {
+  variantId: string;
+  productSlug: string;
+  productName: string;
+  imageUrl: string | null;
+  color: string;
+  size: string;
+  /** Decimal dollars, from the Product. */
+  price: number;
+  /** Available Stock per CONTEXT.md. */
+  availableStock: number;
+};
+
+/**
+ * Resolve Cart Item variant ids to what they cost and how many can be bought.
+ *
+ * A Cart Item stores only `{variantId, quantity}` (ADR 0001, amended
+ * 2026-09-08), so this is what turns a Cart into something renderable. It
+ * returns facts and no verdicts -- whether a line is short, unavailable, or
+ * fine is decided by `reconcile` in lib/cart.ts, which is where the money math
+ * is tested.
+ *
+ * Ids that resolve to nothing are simply absent from the result. That is not an
+ * error case to handle here: `variants_available` ends in `where not
+ * p.is_hidden`, so a Product the client hides in Supabase Studio drops out of
+ * the view, and `reconcile` already reports an absent Variant as unavailable.
+ */
+export async function getVariantsByIds(variantIds: string[]): Promise<ResolvedVariant[]> {
+  if (variantIds.length === 0) return [];
+
+  const supabase = await createClient();
+
+  const { data, error } = await supabase
+    .from("variants_available")
+    .select(
+      `
+      id,
+      color,
+      size,
+      available_stock,
+      products (
+        slug,
+        name,
+        price,
+        image_url
+      )
+    `,
+    )
+    .in("id", variantIds);
+
+  if (error) throw new Error(`Failed to resolve cart variants: ${error.message}`);
+
+  type RawResolved = {
+    id: string | null;
+    color: string | null;
+    size: string | null;
+    available_stock: number | null;
+    products: {
+      slug: string | null;
+      name: string | null;
+      price: number | null;
+      image_url: string | null;
+    } | null;
+  };
+
+  // View columns arrive nullable because Postgres views carry no NOT NULL
+  // constraints (see lib/database.types.ts). Normalise here so nothing
+  // downstream reasons about `number | null` stock.
+  return (data as unknown as RawResolved[])
+    .filter((row) => row.id !== null && row.products !== null)
+    .map((row) => ({
+      variantId: row.id as string,
+      productSlug: row.products?.slug ?? "",
+      productName: row.products?.name ?? "",
+      imageUrl: row.products?.image_url ?? null,
+      color: row.color ?? "",
+      size: row.size ?? "",
+      price: Number(row.products?.price ?? 0),
+      availableStock: row.available_stock ?? 0,
+    }));
+}

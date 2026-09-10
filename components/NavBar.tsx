@@ -3,9 +3,11 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import ShopDropdown from "./ShopDropdown";
+import { useCart } from "./CartProvider";
 
 export default function NavBar() {
   const [isShopOpen, setIsShopOpen] = useState(false);
+  const { count, hydrated } = useCart();
 
   return (
     <header 
@@ -51,7 +53,14 @@ export default function NavBar() {
             Profile
           </Link>
           <Link href="/cart" className="hover:opacity-70 transition-opacity flex items-center gap-2">
-            Cart <span className="text-xs border border-ssuni-brown px-2 py-0.5 rounded-full">0</span>
+            Cart{" "}
+            {/* Blank until the Cart has been read from localStorage. The server
+                cannot know the count, so rendering one before hydration is a
+                mismatch; a cookie mirror would fix the flash by putting the same
+                truth in two stores, which drift (Q12, 2026-09-08). */}
+            <span className="text-xs border border-ssuni-brown px-2 py-0.5 rounded-full min-w-[1.75rem] inline-block text-center">
+              {hydrated ? count : " "}
+            </span>
           </Link>
         </div>
       </div>

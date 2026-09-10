@@ -1,0 +1,314 @@
+"use client";
+
+import React, { useEffect, useState } from "react";
+import Link from "next/link";
+import { useCart } from "@/components/CartProvider";
+import { reconcile, type ReconciledItem, type VariantAvailability } from "@/lib/cart";
+import type { ResolvedVariant } from "@/lib/catalog";
+
+/**
+ * The Cart page.
+ *
+ * A client component, because the Cart lives in localStorage (ADR 0001). It
+ * therefore cannot import lib/catalog.ts -- that module reaches next/headers --
+ * so live prices and Available Stock arrive through POST /api/cart/resolve.
+ *
+ * Nothing here computes money. `reconcile` in lib/cart.ts decides what each
+ * line costs and what the subtotal is, so /cart and checkout cannot come to
+ * different answers. This file only renders what it is told.
+ */
+
+/**
+ * Keyed by the ids it was fetched for, so "is this stale?" is derived rather
+ * than tracked: changing the Cart makes the previous result stale on the spot,
+ * with no effect having to set a loading flag.
+ */
+type ResolveState =
+  | { key: string; status: "error" }
+  | { key: string; status: "ready"; variants: Record<string, ResolvedVariant> };
+
+function money(amount: number): string {
+  return `$${amount.toFixed(2)}`;
+}
+
+/**
+ * Ask the server what the Cart's Variants cost and how many are left.
+ *
+ * Outside the component on purpose: it takes the Cart's ids and returns the
+ * next state rather than setting any, which keeps every state write in this
+ * file inside an async callback.
+ */
+async function resolveCart(key: string): Promise<ResolveState> {
+  try {
+    const response = await fetch("/api/cart/resolve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ variantIds: key.split(",") }),
+    });
+    if (!response.ok) throw new Error(`Resolve failed: ${response.status}`);
+
+    const body: { variants: ResolvedVariant[] } = await response.json();
+    return {
+      key,
+      status: "ready",
+      variants: Object.fromEntries(body.variants.map((variant) => [variant.variantId, variant])),
+    };
+  } catch {
+    return { key, status: "error" };
+  }
+}
+
+export default function CartPage() {
+  const { items, hydrated, setItemQuantity, remove } = useCart();
+  const [resolved, setResolved] = useState<ResolveState | null>(null);
+  // The Variant whose last quantity edit was clamped, so the snap-back can be
+  // explained. Transient UI state, never persisted.
+  const [clampedVariantId, setClampedVariantId] = useState<string | null>(null);
+
+  // Joined into a string so the effect below depends on the *ids*, not on a new
+  // array identity every render.
+  const variantIds = items.map((item) => item.variantId).join(",");
+
+  useEffect(() => {
+    if (!hydrated || variantIds === "") return;
+
+    // Cancellation matters: without it a slow response for an older Cart can
+    // land after a newer one and overwrite it. The `key` check below stops
+    // stale data being *rendered*, but this stops it being stored at all.
+    let cancelled = false;
+    void resolveCart(variantIds).then((next) => {
+      if (!cancelled) setResolved(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [hydrated, variantIds]);
+
+  const retry = () => {
+    void resolveCart(variantIds).then(setResolved);
+  };
+
+  if (!hydrated) {
+    return (
+      <CartShell>
+        <p className="font-belleza text-ssuni-slate">Loading your cart…</p>
+      </CartShell>
+    );
+  }
+
+  // Checked before the resolve state, so an empty Cart renders without waiting
+  // on a request it never makes.
+  if (items.length === 0) {
+    return (
+      <CartShell>
+        <p className="font-belleza text-ssuni-slate mb-8">Your cart is empty.</p>
+        <Link
+          href="/catalog"
+          className="border border-ssuni-brown px-8 py-3 text-xs uppercase tracking-widest font-belleza hover:bg-ssuni-brown hover:text-ssuni-light1 transition-colors"
+        >
+          Continue shopping
+        </Link>
+      </CartShell>
+    );
+  }
+
+  // Loading is derived from the data being absent or belonging to a different
+  // Cart, so nothing sets a flag synchronously inside an effect.
+  if (resolved === null || resolved.key !== variantIds) {
+    return (
+      <CartShell>
+        <p className="font-belleza text-ssuni-slate">Loading your cart…</p>
+      </CartShell>
+    );
+  }
+
+  if (resolved.status === "error") {
+    return (
+      <CartShell>
+        <p className="font-belleza text-ssuni-slate mb-6">
+          We couldn&apos;t load your cart just now. Your items are safe — please try again.
+        </p>
+        <button
+          onClick={retry}
+          className="border border-ssuni-brown px-8 py-3 text-xs uppercase tracking-widest font-belleza hover:bg-ssuni-brown hover:text-ssuni-light1 transition-colors cursor-pointer"
+        >
+          Retry
+        </button>
+      </CartShell>
+    );
+  }
+
+  // The subtotal and every line total come from here, and only from here.
+  const availability: Record<string, VariantAvailability> = Object.fromEntries(
+    Object.values(resolved.variants).map((variant) => [
+      variant.variantId,
+      { price: variant.price, availableStock: variant.availableStock },
+    ]),
+  );
+  const cart = reconcile(items, availability);
+
+  return (
+    <CartShell>
+      <ul className="border-t border-ssuni-light2">
+        {cart.items.map((line) => (
+          <CartRow
+            key={line.variantId}
+            line={line}
+            variant={resolved.variants[line.variantId]}
+            wasClamped={clampedVariantId === line.variantId}
+            onQuantityChange={(quantity) => {
+              // Clamped at the point of the edit, exactly as adding is. This is
+              // not the Cart mutating itself behind the shopper: they typed a
+              // number, it snaps to what is buyable, and the reason appears
+              // beside it. Stock dropping while the Cart sits untouched is the
+              // other case, and that one only *shows* the shortfall -- it never
+              // rewrites what was stored.
+              const stock = resolved.variants[line.variantId]?.availableStock ?? quantity;
+              setClampedVariantId(quantity > stock ? line.variantId : null);
+              setItemQuantity(line.variantId, Math.min(quantity, stock));
+            }}
+            onRemove={() => remove(line.variantId)}
+          />
+        ))}
+      </ul>
+
+      <div className="mt-10 flex flex-col items-end gap-4">
+        <div className="flex items-baseline gap-6">
+          <span className="text-xs uppercase tracking-widest font-belleza text-ssuni-slate">
+            Subtotal
+          </span>
+          <span className="font-cinzel text-2xl text-ssuni-brown">{money(cart.subtotal)}</span>
+        </div>
+        <p className="text-xs font-belleza text-ssuni-slate">
+          Shipping and taxes are calculated at checkout.
+        </p>
+        {/* Checkout arrives with #15, which is also where stock is actually
+            held (ADR 0010). Everything above is UX, not a correctness gate. */}
+        <button
+          disabled
+          className="border border-ssuni-brown px-10 py-4 text-xs uppercase tracking-widest font-belleza opacity-40 cursor-not-allowed"
+        >
+          Checkout
+        </button>
+      </div>
+    </CartShell>
+  );
+}
+
+function CartShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen pt-32 pb-24">
+      <div className="max-w-4xl mx-auto px-6 text-ssuni-brown">
+        <h1 className="font-cinzel text-4xl mb-10">Your Cart</h1>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function CartRow({
+  line,
+  variant,
+  wasClamped,
+  onQuantityChange,
+  onRemove,
+}: {
+  line: ReconciledItem;
+  variant: ResolvedVariant | undefined;
+  /** The shopper just asked for more of this Variant than is buyable. */
+  wasClamped: boolean;
+  onQuantityChange: (quantity: number) => void;
+  onRemove: () => void;
+}) {
+  const unavailable = line.status === "unavailable";
+
+  return (
+    <li className="flex gap-4 sm:gap-6 py-8 border-b border-ssuni-light2">
+      <div className="w-24 h-32 bg-ssuni-light2 shrink-0 overflow-hidden">
+        {variant ? (
+          <img
+            src={variant.imageUrl ?? "/images/download.jpeg"}
+            alt={variant.productName}
+            className={`w-full h-full object-cover ${unavailable ? "opacity-40" : ""}`}
+          />
+        ) : null}
+      </div>
+
+      {/* min-w-0 is load-bearing: without it a flex child will not shrink below
+          its content width, and the price column gets pushed past the page
+          padding on narrow screens. */}
+      <div className="flex-grow min-w-0 flex flex-col">
+        {variant ? (
+          <Link
+            href={`/catalog/${variant.productSlug}`}
+            className="font-cinzel text-xl hover:opacity-70 transition-opacity break-words"
+          >
+            {variant.productName}
+          </Link>
+        ) : (
+          <span className="font-cinzel text-xl text-ssuni-slate">
+            This piece is no longer available
+          </span>
+        )}
+
+        {variant && (
+          <p className="font-belleza text-sm text-ssuni-slate mt-1">
+            {variant.color} · {variant.size}
+          </p>
+        )}
+
+        {/* The Cart never silently corrects itself: a shortfall is shown, and an
+            unavailable line stays visible and out of the subtotal rather than
+            being deleted behind the shopper. */}
+        {/* Two different shortfalls. `short` is stock having dropped while the
+            Cart sat untouched -- shown, never written back. `wasClamped` is the
+            shopper having just typed a bigger number than exists. */}
+        {line.status === "short" && (
+          <p className="font-belleza text-sm text-ssuni-brown mt-2">
+            Only {line.quantity} left — reduced from {line.requestedQuantity}.
+          </p>
+        )}
+        {line.status !== "short" && wasClamped && (
+          <p className="font-belleza text-sm text-ssuni-brown mt-2">
+            Only {line.quantity} left — that is the most we can send you.
+          </p>
+        )}
+        {unavailable && (
+          <p className="font-belleza text-sm text-ssuni-brown mt-2">
+            Sold out or no longer stocked. It will not be included at checkout.
+          </p>
+        )}
+
+        <div className="mt-auto pt-4 flex items-center gap-6">
+          {!unavailable && (
+            <label className="flex items-center gap-2 text-xs uppercase tracking-widest font-belleza text-ssuni-slate">
+              Qty
+              <input
+                type="number"
+                min={1}
+                max={variant?.availableStock ?? 1}
+                value={line.quantity}
+                onChange={(event) => onQuantityChange(Number(event.target.value))}
+                className="w-16 border border-ssuni-light2 px-2 py-1 font-belleza text-ssuni-brown"
+              />
+            </label>
+          )}
+          <button
+            onClick={onRemove}
+            className="text-xs uppercase tracking-widest font-belleza text-ssuni-slate hover:text-ssuni-brown transition-colors cursor-pointer"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+
+      <div className="text-right font-belleza shrink-0">
+        {unavailable ? (
+          <span className="text-ssuni-slate">—</span>
+        ) : (
+          <span className="text-ssuni-brown">{money(line.lineTotal)}</span>
+        )}
+      </div>
+    </li>
+  );
+}
