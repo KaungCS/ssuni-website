@@ -1,12 +1,3 @@
-import {
-  isCategorySlug,
-  isCollectionSlug,
-  isDepartmentSlug,
-  type CategorySlug,
-  type CollectionSlug,
-  type DepartmentSlug,
-} from "./taxonomy";
-
 /**
  * What a catalog URL means: the filter and sort vocabulary, and the parsing that
  * validates it. Issues #10 and #37.
@@ -20,10 +11,33 @@ import {
  * vocabulary and the filter shape; it must never need a query.
  *
  * So: anything a client component might legitimately want lives here, and this
- * file imports nothing but lib/taxonomy.ts, which is equally pure.
- * lib/catalog.ts re-exports all of it, so server-side callers can keep treating
- * `@/lib/catalog` as the single door.
+ * file imports nothing at all. lib/catalog.ts re-exports all of it, so
+ * server-side callers can keep treating `@/lib/catalog` as the single door.
  */
+
+// ---------------------------------------------------------------------------
+// Vocabulary (#50)
+// ---------------------------------------------------------------------------
+
+/**
+ * The declared Taxonomy Terms, by dimension -- what this module is allowed to
+ * consider real.
+ *
+ * It arrives as an argument rather than being read from a module of its own,
+ * because #49 moves the vocabulary into Postgres. A parser that fetched it
+ * would have to be async and would reach `next/headers`, which is precisely
+ * what this file exists not to do; every rule below would then need a database
+ * to test. lib/cart.ts already makes this trade with Available Stock.
+ *
+ * Slugs only. Display labels are a rendering concern and no rule here depends
+ * on them, so widening this to whole Terms would be a wider interface than the
+ * job needs.
+ */
+export type CatalogVocabulary = {
+  departments: readonly string[];
+  categories: readonly string[];
+  collections: readonly string[];
+};
 
 // ---------------------------------------------------------------------------
 // Filters (#10)
@@ -38,11 +52,17 @@ import {
  * the start even though today's nav only ever links one value at a time -- the
  * filter drawer (#37) emits repeated params, and it did not have to reopen the
  * query layer to do it.
+ *
+ * The slugs are plain strings rather than a union of the declared Terms. That
+ * narrowing died with #50 on purpose: the vocabulary is data the database owns
+ * from #49 onwards, so no type can enumerate it at compile time. What keeps a
+ * bad slug out is parseCatalogFilters, which is why every value in here is
+ * known-good.
  */
 export type CatalogFilters = {
-  departments: DepartmentSlug[];
-  categories: CategorySlug[];
-  collections: CollectionSlug[];
+  departments: string[];
+  categories: string[];
+  collections: string[];
   isNew: boolean;
 };
 
@@ -69,9 +89,9 @@ export function hasActiveFilters(filters: CatalogFilters): boolean {
  * drawer can name it without importing the query module.
  */
 export type CatalogFacets = {
-  departments: DepartmentSlug[];
-  categories: CategorySlug[];
-  collections: CollectionSlug[];
+  departments: string[];
+  categories: string[];
+  collections: string[];
 };
 
 /** Next hands search params as `string | string[] | undefined` per key. */
@@ -92,11 +112,12 @@ function asList(value: string | string[] | undefined): string[] {
  * nothing, and rendering the full catalog there would silently ignore what they
  * asked for -- so the page 404s instead.
  */
-function keepDeclared<T extends string>(
+function keepDeclared(
   raw: string[],
-  isDeclared: (value: string) => value is T,
-): { values: T[]; allUnknown: boolean } {
-  const values = [...new Set(raw.filter(isDeclared))];
+  declared: readonly string[],
+): { values: string[]; allUnknown: boolean } {
+  const declaredSet = new Set(declared);
+  const values = [...new Set(raw.filter((value) => declaredSet.has(value)))];
   return { values, allUnknown: raw.length > 0 && values.length === 0 };
 }
 
@@ -104,14 +125,18 @@ function keepDeclared<T extends string>(
  * Validates URL search params into filters, or returns null when the URL names a
  * dimension whose every value is undeclared -- the page turns that into a 404.
  *
- * "Declared" means present in lib/taxonomy.ts. That file is the storefront's
- * half of the contract; the database enforces the same list with CHECK
- * constraints, so a Product cannot hold a slug this rejects (ADR 0011).
+ * "Declared" means present in the vocabulary the caller passes in -- nothing
+ * more. This function has no opinion about which Terms the shop actually sells,
+ * which is what lets the storefront move that list from a TypeScript constant
+ * (#50) into Postgres (#49) without touching a single rule below.
  */
-export function parseCatalogFilters(params: RawSearchParams): CatalogFilters | null {
-  const department = keepDeclared(asList(params.department), isDepartmentSlug);
-  const category = keepDeclared(asList(params.category), isCategorySlug);
-  const collection = keepDeclared(asList(params.collection), isCollectionSlug);
+export function parseCatalogFilters(
+  params: RawSearchParams,
+  vocabulary: CatalogVocabulary,
+): CatalogFilters | null {
+  const department = keepDeclared(asList(params.department), vocabulary.departments);
+  const category = keepDeclared(asList(params.category), vocabulary.categories);
+  const collection = keepDeclared(asList(params.collection), vocabulary.collections);
 
   if (department.allUnknown || category.allUnknown || collection.allUnknown) return null;
 

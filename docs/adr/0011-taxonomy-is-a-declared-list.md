@@ -15,3 +15,7 @@ Adding a category now requires a migration, so the client cannot do it alone. Th
 The migration to tables is data-preserving: existing slugs become rows, the `CHECK` constraints are dropped, and foreign keys replace them. `collections` being `text[]` does not have a natural foreign key, so #38 must choose between a join table and a trigger-checked constraint and record which.
 
 Because the storefront and the database now enforce the same list from two places, a term added to one and not the other fails in opposite directions — added only to `lib/taxonomy.ts`, the catalog offers a filter no Product can hold; added only to the constraint, a valid Product 404s. Neither is silent, which is the improvement, but both are confusing until #38 collapses them into one source.
+
+---
+
+**Amended 2026-09-09 by [ADR 0013](./0013-taxonomy-tables-and-the-vocabulary-argument.md).** The two questions this ADR left open — the shape of the `collections` foreign key, and whether the tables are worth the session — are both settled there: a `product_collections` join table, built in issue #49 (which supersedes #38, the earlier framing of the same work).

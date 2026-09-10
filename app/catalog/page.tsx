@@ -12,7 +12,12 @@ import {
   parseCatalogSort,
   type CatalogFilters,
 } from "@/lib/catalog";
-import { categoryLabel, collectionLabel, departmentLabel } from "@/lib/taxonomy";
+import {
+  categoryLabel,
+  collectionLabel,
+  departmentLabel,
+  DECLARED_VOCABULARY,
+} from "@/lib/taxonomy";
 
 // Fully dynamic on purpose: stock changes, and a cached "Few Left" badge is a
 // lie told to a paying customer. The catalog is placeholder seed data today
@@ -68,16 +73,21 @@ function subtitleFor(labels: string[]): string | null {
  * A filtered view is a different page as far as a bookmark, a shared link, or a
  * browser tab is concerned, so the title has to say which one it is.
  *
- * This re-parses the same params the page parses. That is deliberate and free --
- * validation touches no database, and threading the result through would mean
- * inventing a cache for something cheaper than the cache.
+ * This re-parses the same params the page parses. That is deliberate and free
+ * today -- validation touches no database, and threading the result through
+ * would mean inventing a cache for something cheaper than the cache.
+ *
+ * It stops being free in #49, when the vocabulary comes from Postgres: this
+ * function and the page would then each load it, doubling the round trip on
+ * every catalog request. Whoever does #49 should decide there whether to cache
+ * the taxonomy read or accept the second query.
  */
 export async function generateMetadata({
   searchParams,
 }: {
   searchParams: SearchParams;
 }): Promise<Metadata> {
-  const filters = parseCatalogFilters(await searchParams);
+  const filters = parseCatalogFilters(await searchParams, DECLARED_VOCABULARY);
   if (!filters) return { title: "Not Found | SSUNI" };
 
   const labels = activeLabels(filters);
@@ -92,7 +102,7 @@ export default async function CatalogPage({
   searchParams: SearchParams;
 }) {
   const params = await searchParams;
-  const filters = parseCatalogFilters(params);
+  const filters = parseCatalogFilters(params, DECLARED_VOCABULARY);
 
   // A URL naming a category that does not exist is a real 404, the same way an
   // unknown Product slug is. Rendering the whole catalog instead would quietly

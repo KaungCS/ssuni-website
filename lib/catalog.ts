@@ -52,6 +52,7 @@ export {
   type CatalogFacets,
   type CatalogFilters,
   type CatalogSort,
+  type CatalogVocabulary,
 } from "./catalog-url";
 
 /** The columns the storefront needs, and the Variant embed, in one round trip. */
