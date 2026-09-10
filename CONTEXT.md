@@ -27,14 +27,18 @@ _Avoid_: Bag, basket
 A Variant plus a quantity, as one line of a Cart. Holds a reference to the Variant, never a copy of its price or stock — those are read live, so what the Cart displays and what Stripe charges cannot drift apart. Parallels an Order Item, which is the same idea after payment.
 _Avoid_: line item, cart line
 
+**Taxonomy Term**:
+One entry on a declared list the client maintains — a Department, a Category, or a Collection — carrying the name shoppers see. A Product picks Terms from these lists and can never mint a new one; a Term can only be retired by reassigning the Products that hold it.
+_Avoid_: tag, label, facet
+
 **Department**:
-The broadest taxonomy dimension a Product can be filtered by (e.g. Women, Men, Unisex). Distinct from Category and Collection.
+The broadest taxonomy dimension a Product can be filtered by (e.g. Women, Men, Unisex). A Product sits in at most one. Distinct from Category and Collection.
 
 **Category**:
-The clothing-type taxonomy dimension a Product can be filtered by (e.g. Hoodies & Sweats, Knitwear). Distinct from Department and Collection.
+The clothing-type taxonomy dimension a Product can be filtered by (e.g. Hoodies & Sweats, Knitwear). A Product sits in at most one. Distinct from Department and Collection.
 
 **Collection**:
-A named, curated grouping of Products the client assembles by hand — a time-boxed drop ("The Rabbit Hole"), a seasonal edit ("Fall Lookbook"), or a merchandising shelf ("Best Sellers"). Membership is always chosen, never computed from sales or recency. Distinct from Department and Category.
+A named, curated grouping of Products the client assembles by hand — a time-boxed drop ("The Rabbit Hole"), a seasonal edit ("Fall Lookbook"), or a merchandising shelf ("Best Sellers"). Membership is always chosen, never computed from sales or recency, and a Product can belong to several at once. Distinct from Department and Category.
 
 **Tag**:
 A planned future taxonomy dimension for finer-grained, cross-cutting labeling of Products, not yet implemented.
