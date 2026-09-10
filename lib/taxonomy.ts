@@ -1,3 +1,5 @@
+import type { CatalogVocabulary } from "./catalog-url";
+
 /**
  * The catalog taxonomy vocabulary, in one place.
  *
@@ -62,20 +64,26 @@ export function collectionLabel(slug: string | null | undefined): string {
  * what the database will accept -- the CHECK constraints in
  * supabase/migrations/20260830120000_taxonomy_declared_values.sql are generated
  * from exactly these lists, so the two must be changed together until the real
- * taxonomy tables land (issue #38, ADR 0011).
+ * taxonomy tables land (issue #49, ADR 0011 and ADR 0013).
  */
 export const DEPARTMENT_SLUGS = Object.keys(DEPARTMENTS) as DepartmentSlug[];
 export const CATEGORY_SLUGS = Object.keys(CATEGORIES) as CategorySlug[];
 export const COLLECTION_SLUGS = Object.keys(COLLECTIONS) as CollectionSlug[];
 
-export function isDepartmentSlug(value: string): value is DepartmentSlug {
-  return value in DEPARTMENTS;
-}
-
-export function isCategorySlug(value: string): value is CategorySlug {
-  return value in CATEGORIES;
-}
-
-export function isCollectionSlug(value: string): value is CollectionSlug {
-  return value in COLLECTIONS;
-}
+/**
+ * The declared Taxonomy Terms in the shape parseCatalogFilters wants (#50).
+ *
+ * This constant is the seam, and it is meant to be short-lived: #49 replaces it
+ * with a read of the taxonomy tables, at which point this whole file keeps its
+ * generated types and loses its vocabulary. Because the parser takes the
+ * vocabulary as an argument, that swap changes what the catalog page passes and
+ * nothing about what a catalog URL means.
+ *
+ * The type import is erased at compile time, so this does not pull anything
+ * into lib/catalog-url.ts's import graph -- that file still imports nothing.
+ */
+export const DECLARED_VOCABULARY: CatalogVocabulary = {
+  departments: DEPARTMENT_SLUGS,
+  categories: CATEGORY_SLUGS,
+  collections: COLLECTION_SLUGS,
+};
