@@ -11,6 +11,7 @@ import {
   removeItem,
   saveCart,
   setQuantity,
+  toStripeLineItems,
 } from "./cart";
 
 const HOODIE_ESPRESSO_M = "11111111-1111-4111-8111-111111111111";
@@ -287,5 +288,58 @@ describe("parseCheckoutRequest", () => {
         ],
       }),
     ).toBeNull();
+  });
+});
+
+describe("toStripeLineItems", () => {
+  const vid = "0a7b617d-f5b2-4296-8d0d-cda178605c80";
+
+  const variant = {
+    price: 19.99,
+    availableStock: 10,
+    productName: "Rabbit Hole Hoodie",
+    color: "Espresso",
+    size: "M",
+    imageUrl: "https://example.test/hoodie.jpg",
+  };
+
+  it("converts dollars to integer cents", () => {
+    const [line] = toStripeLineItems([{ variantId: vid, quantity: 3 }], { [vid]: variant });
+    expect(line.price_data.unit_amount).toBe(1999);
+    expect(line.quantity).toBe(3);
+  });
+
+  it("never emits a fractional cent", () => {
+    // 19.99 * 3 is 59.97000000000001 in binary floating point. Stripe rejects a
+    // non-integer unit_amount, and the tail would otherwise reach the charge.
+    const [line] = toStripeLineItems(
+      [{ variantId: vid, quantity: 3 }],
+      { [vid]: { ...variant, price: 19.99 } },
+    );
+    expect(Number.isInteger(line.price_data.unit_amount)).toBe(true);
+  });
+
+  it("names the line with the product, colour and size", () => {
+    const [line] = toStripeLineItems([{ variantId: vid, quantity: 1 }], { [vid]: variant });
+    expect(line.price_data.product_data.name).toBe("Rabbit Hole Hoodie — Espresso / M");
+  });
+
+  it("omits images entirely when there is no image", () => {
+    const [line] = toStripeLineItems(
+      [{ variantId: vid, quantity: 1 }],
+      { [vid]: { ...variant, imageUrl: null } },
+    );
+    expect(line.price_data.product_data.images).toBeUndefined();
+  });
+
+  it("skips a variant absent from the map rather than pricing it at zero", () => {
+    expect(toStripeLineItems([{ variantId: vid, quantity: 1 }], {})).toEqual([]);
+  });
+
+  it("agrees with reconcile about the total", () => {
+    const items = [{ variantId: vid, quantity: 2 }];
+    const lines = toStripeLineItems(items, { [vid]: variant });
+    const stripeTotal = lines.reduce((n, l) => n + l.price_data.unit_amount * l.quantity, 0);
+    expect(stripeTotal).toBe(Math.round(reconcile(items, { [vid]: variant }).subtotal * 100));
   });
 });

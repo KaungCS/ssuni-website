@@ -216,6 +216,73 @@ export function parseCheckoutRequest(body: unknown): CartItem[] | null {
 }
 
 // ---------------------------------------------------------------------------
+// Checkout line items (#15)
+// ---------------------------------------------------------------------------
+
+/**
+ * Confirmed with Kaung on 2026-09-13, matching the $X.XX the storefront
+ * renders. No ADR records this; if SSUNI ever bills in another currency, this
+ * is the only line to change.
+ */
+export const CHECKOUT_CURRENCY = "usd";
+
+/** Everything checkout needs to describe one line to Stripe. */
+export type CheckoutVariant = VariantAvailability & {
+  productName: string;
+  color: string;
+  size: string;
+  imageUrl: string | null;
+};
+
+/** One Stripe `price_data` line. Structural, so this module still imports nothing. */
+export type CheckoutLineItem = {
+  price_data: {
+    currency: string;
+    unit_amount: number;
+    product_data: { name: string; images?: string[] };
+  };
+  quantity: number;
+};
+
+/**
+ * Build Stripe line items from live catalog data (ADR 0008: inline price_data,
+ * never a mirrored Stripe catalog).
+ *
+ * `unit_amount` goes through the same toCents as the subtotal, on purpose. A
+ * second rounding here is how the Cart and the amount charged come to differ by
+ * a cent, and a cent is enough for a customer to notice and not trust you.
+ *
+ * A Variant absent from the map is skipped rather than priced at zero -- the
+ * route has already refused such a Cart with a 409, and a zero-price line would
+ * read as a free gift if that check were ever weakened.
+ */
+export function toStripeLineItems(
+  items: CartItem[],
+  variants: Record<string, CheckoutVariant>,
+): CheckoutLineItem[] {
+  const lines: CheckoutLineItem[] = [];
+
+  for (const item of items) {
+    const variant = variants[item.variantId];
+    if (!variant) continue;
+
+    lines.push({
+      price_data: {
+        currency: CHECKOUT_CURRENCY,
+        unit_amount: toCents(variant.price),
+        product_data: {
+          name: `${variant.productName} — ${variant.color} / ${variant.size}`,
+          ...(variant.imageUrl ? { images: [variant.imageUrl] } : {}),
+        },
+      },
+      quantity: item.quantity,
+    });
+  }
+
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 
