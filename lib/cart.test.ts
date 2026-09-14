@@ -332,6 +332,30 @@ describe("toStripeLineItems", () => {
     expect(line.price_data.product_data.images).toBeUndefined();
   });
 
+  it("omits a site-relative image rather than sending it to Stripe", () => {
+    // The seeded catalog stores "/images/download.jpeg". Stripe rejects a
+    // relative URL with `url_invalid` and fails the whole Session, so a missing
+    // photograph would block the sale of a Product that is otherwise fine.
+    const [line] = toStripeLineItems(
+      [{ variantId: vid, quantity: 1 }],
+      { [vid]: { ...variant, imageUrl: "/images/download.jpeg" } },
+    );
+    expect(line.price_data.product_data.images).toBeUndefined();
+  });
+
+  it("keeps an absolute https image", () => {
+    const [line] = toStripeLineItems([{ variantId: vid, quantity: 1 }], { [vid]: variant });
+    expect(line.price_data.product_data.images).toEqual(["https://example.test/hoodie.jpg"]);
+  });
+
+  it("omits a non-http image url", () => {
+    const [line] = toStripeLineItems(
+      [{ variantId: vid, quantity: 1 }],
+      { [vid]: { ...variant, imageUrl: "javascript:alert(1)" } },
+    );
+    expect(line.price_data.product_data.images).toBeUndefined();
+  });
+
   it("skips a variant absent from the map rather than pricing it at zero", () => {
     expect(toStripeLineItems([{ variantId: vid, quantity: 1 }], {})).toEqual([]);
   });

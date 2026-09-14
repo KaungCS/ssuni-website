@@ -36,6 +36,8 @@ export async function POST(request: Request) {
     );
   }
 
+  const origin = new URL(request.url).origin;
+
   // Prices come from the database, never from the browser (ADR 0001/0008).
   const resolved = await getVariantsByIds(items.map((i) => i.variantId));
 
@@ -48,7 +50,12 @@ export async function POST(request: Request) {
         productName: v.productName,
         color: v.color,
         size: v.size,
-        imageUrl: v.imageUrl,
+        // Products store a site-relative path ("/images/download.jpeg"), and
+        // Stripe only accepts an absolute URL -- it rejects a relative one with
+        // `url_invalid` and fails the whole Session. Resolved here because this
+        // is the only layer that knows the request origin; lib/cart.ts imports
+        // nothing and drops anything still relative by the time it gets there.
+        imageUrl: v.imageUrl ? new URL(v.imageUrl, origin).toString() : null,
       },
     ]),
   );
@@ -66,7 +73,6 @@ export async function POST(request: Request) {
     );
   }
 
-  const origin = new URL(request.url).origin;
   const stripe = getStripe();
 
   let session;
@@ -78,7 +84,11 @@ export async function POST(request: Request) {
       success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${origin}/cart`,
     });
-  } catch {
+  } catch (cause) {
+    // The shopper gets a generic message; the operator needs the reason. A
+    // silent 502 here is indistinguishable from a network blip, and the two
+    // want very different responses.
+    console.error("[checkout] Stripe session creation failed:", cause);
     return NextResponse.json({ error: "Could not reach Stripe." }, { status: 502 });
   }
 
@@ -102,6 +112,7 @@ export async function POST(request: Request) {
     await stripe.checkout.sessions.expire(session.id).catch(() => {});
 
     if (error) {
+      console.error("[checkout] reserve_cart failed:", error);
       return NextResponse.json({ error: "Could not hold stock." }, { status: 502 });
     }
     return NextResponse.json(

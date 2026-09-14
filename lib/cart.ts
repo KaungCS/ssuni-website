@@ -255,11 +255,30 @@ export type CheckoutLineItem = {
  * A Variant absent from the map is skipped rather than priced at zero -- the
  * route has already refused such a Cart with a 409, and a zero-price line would
  * read as a free gift if that check were ever weakened.
+ *
+ * An image that is not an absolute http(s) URL is dropped rather than sent.
+ * Stripe rejects a relative one with `url_invalid` and fails the entire
+ * Session, so passing the seeded "/images/download.jpeg" straight through makes
+ * a missing photograph block the sale of a Product that is otherwise perfectly
+ * sellable. The picture is decoration; the charge is not. Callers that can
+ * resolve a relative path -- the route knows the request origin -- should hand
+ * this an absolute URL so the photograph survives.
  */
 export function toStripeLineItems(
   items: CartItem[],
   variants: Record<string, CheckoutVariant>,
 ): CheckoutLineItem[] {
+  // Parsed rather than pattern-matched, so a "url" like `javascript:` is
+  // rejected by scheme instead of by a regex someone has to keep correct.
+  const isAbsoluteHttpUrl = (url: string): boolean => {
+    try {
+      const { protocol } = new URL(url);
+      return protocol === "http:" || protocol === "https:";
+    } catch {
+      return false;
+    }
+  };
+
   const lines: CheckoutLineItem[] = [];
 
   for (const item of items) {
@@ -272,7 +291,9 @@ export function toStripeLineItems(
         unit_amount: toCents(variant.price),
         product_data: {
           name: `${variant.productName} — ${variant.color} / ${variant.size}`,
-          ...(variant.imageUrl ? { images: [variant.imageUrl] } : {}),
+          ...(variant.imageUrl && isAbsoluteHttpUrl(variant.imageUrl)
+            ? { images: [variant.imageUrl] }
+            : {}),
         },
       },
       quantity: item.quantity,
