@@ -286,5 +286,95 @@ console.log("           npx supabase db query --linked -f supabase/migrations/20
 console.log("         -- then confirm the ids above are unchanged. They must be updated in place;");
 console.log("         a delete-and-reinsert would issue new UUIDs and orphan future foreign keys.");
 
+// -- 9. reserve_cart: the atomic check-and-hold ------------------------------
+section("9. reserve_cart: atomic check-and-hold (#15, ADR 0010)");
+
+// What matters here is what Postgres does under concurrency, which no unit test
+// can tell you -- so this runs against the real database (CLAUDE.md).
+
+const rpc = (key, body) => req(key, "POST", "rpc/reserve_cart", { body });
+const inThirtyMinutes = () => new Date(Date.now() + 30 * 60_000).toISOString();
+
+// `order=id` rather than a bare limit=1: an unordered limit lets Postgres return
+// a different Variant between runs, which would make a failure here depend on
+// which row it happened to pick.
+const testVariant = (await svc("GET", "variants?select=id,stock&order=id&limit=1")).json?.[0];
+if (!testVariant) throw new Error("no variants in the database to test reserve_cart against");
+
+const clearHolds = () => svc("DELETE", "reservations?stripe_session_id=like.cs_test_rc_*");
+
+// try/finally, because this block edits variants.stock. Without it a thrown
+// error partway through leaves a real Product on a fabricated stock count, and
+// db:verify is documented to write nothing permanent.
+try {
+  // -- the browser must not be able to call it at all ------------------------
+  const anonCall = await rpc(ANON, {
+    p_session_id: "cs_test_rc_anon",
+    p_expires_at: inThirtyMinutes(),
+    p_items: [{ variant_id: testVariant.id, quantity: 1 }],
+  });
+  check("anon cannot execute reserve_cart", anonCall.status !== 200, `status ${anonCall.status}`);
+
+  // -- a satisfiable hold succeeds and reduces Available Stock ---------------
+  await svc("PATCH", `variants?id=eq.${testVariant.id}`, { body: { stock: 5 } });
+
+  const ok = await rpc(SERVICE, {
+    p_session_id: "cs_test_rc_ok_1",
+    p_expires_at: inThirtyMinutes(),
+    p_items: [{ variant_id: testVariant.id, quantity: 2 }],
+  });
+  check("a satisfiable hold returns no shortfalls",
+    ok.status === 200 && ok.json?.length === 0, `status ${ok.status} ${JSON.stringify(ok.json)}`);
+
+  const afterReserve = (await svc("GET", `variants_available?select=available_stock&id=eq.${testVariant.id}`)).json?.[0];
+  check("Available Stock drops by the held quantity",
+    afterReserve?.available_stock === 3, JSON.stringify(afterReserve));
+
+  // -- all or nothing --------------------------------------------------------
+  const tooMany = await rpc(SERVICE, {
+    p_session_id: "cs_test_rc_short_1",
+    p_expires_at: inThirtyMinutes(),
+    p_items: [{ variant_id: testVariant.id, quantity: 99 }],
+  });
+  check("an unsatisfiable hold reports the shortfall",
+    tooMany.json?.[0]?.available === 3, JSON.stringify(tooMany.json));
+
+  const shortRows = (await svc("GET", "reservations?select=id&stripe_session_id=eq.cs_test_rc_short_1")).json ?? [];
+  check("an unsatisfiable hold inserts nothing", shortRows.length === 0, JSON.stringify(shortRows));
+
+  // -- an unknown Variant is a shortfall, not a silent skip -------------------
+  const ghost = await rpc(SERVICE, {
+    p_session_id: "cs_test_rc_ghost_1",
+    p_expires_at: inThirtyMinutes(),
+    p_items: [{ variant_id: "00000000-0000-4000-8000-000000000000", quantity: 1 }],
+  });
+  check("an unknown variant reports available 0",
+    ghost.json?.[0]?.available === 0, JSON.stringify(ghost.json));
+
+  // -- the race: two shoppers, one unit --------------------------------------
+  await clearHolds();
+  await svc("PATCH", `variants?id=eq.${testVariant.id}`, { body: { stock: 1 } });
+
+  const [raceA, raceB] = await Promise.all([
+    rpc(SERVICE, { p_session_id: "cs_test_rc_race_a", p_expires_at: inThirtyMinutes(),
+                   p_items: [{ variant_id: testVariant.id, quantity: 1 }] }),
+    rpc(SERVICE, { p_session_id: "cs_test_rc_race_b", p_expires_at: inThirtyMinutes(),
+                   p_items: [{ variant_id: testVariant.id, quantity: 1 }] }),
+  ]);
+
+  const winners = [raceA, raceB].filter((r) => r.status === 200 && r.json?.length === 0).length;
+  check("exactly one of two concurrent shoppers gets the last unit", winners === 1,
+    `winners=${winners} a=${JSON.stringify(raceA.json)} b=${JSON.stringify(raceB.json)}`);
+} finally {
+  await clearHolds();
+  await svc("PATCH", `variants?id=eq.${testVariant.id}`, { body: { stock: testVariant.stock } });
+}
+
+const stockRestored = (await svc("GET", `variants?select=stock&id=eq.${testVariant.id}`)).json?.[0];
+check("test stock restored", stockRestored?.stock === testVariant.stock, JSON.stringify(stockRestored));
+
+const holdsLeft = (await svc("GET", "reservations?select=id")).json ?? [];
+check("no test Reservation left behind", holdsLeft.length === 0, `${holdsLeft.length} rows remain`);
+
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
