@@ -225,59 +225,95 @@ note "because hosted Checkout (ADR 0008) runs entirely server-side."
 pause
 
 # ── 3 ─────────────────────────────────────────────────────────────────────
-stage "Install the Stripe CLI"
-say "Needed for the signing secret in the next stage, and for replaying events"
-say "at the webhook in #18."
-if command -v stripe >/dev/null 2>&1; then
-  note "already installed: $(stripe --version 2>&1 | head -n1)"
-elif command -v winget >/dev/null 2>&1; then
-  say "Installing Stripe.StripeCli via winget..."
-  winget install --id Stripe.StripeCli -e \
-    --accept-package-agreements --accept-source-agreements \
-    || warn "winget install failed -- install by hand from the docs page."
-  note "This machine is arm64; if only an x64 build is published it runs under"
-  note "Windows emulation, which is fine for a CLI."
-  warn "A fresh install is usually NOT on PATH in this shell. If the next stage"
-  warn "cannot find 'stripe', close this terminal, open a new one, and re-run."
+stage "Stripe CLI -- needed for #18, NOT for #15"
+say "The CLI supplies the local webhook signing secret and replays events at the"
+say "webhook. The checkout route (#15) needs only the secret key already saved,"
+say "so stages 3-5 can wait until #18 without blocking anything."
+say ""
+DO_CLI=0
+if confirm "Set up the CLI now?"; then
+  DO_CLI=1
+
+  # The npm package @stripe/cli carries a platform allowlist with no
+  # win32-arm64 entry, so it refuses before running anything. That is
+  # gatekeeping, not a real incompatibility: the official release is x86_64 and
+  # Windows on ARM runs it under emulation. Detect the broken shim, because it
+  # sits on PATH and would otherwise look like a working install.
+  if command -v stripe >/dev/null 2>&1 && ! stripe --version >/dev/null 2>&1; then
+    warn "A non-working 'stripe' is on PATH:"
+    note "  $(stripe --version 2>&1 | head -n1)"
+    say "That is the npm wrapper refusing on arm64. Remove it first:"
+    say ""
+    say "    npm uninstall -g @stripe/cli"
+    say ""
+    pause "Removed it?"
+  fi
+
+  if command -v stripe >/dev/null 2>&1 && stripe --version >/dev/null 2>&1; then
+    note "already working: $(stripe --version 2>&1 | head -n1)"
+  elif command -v winget >/dev/null 2>&1; then
+    say "Installing Stripe.StripeCli via winget (the official x86_64 zip)..."
+    winget install --id Stripe.StripeCli -e \
+      --accept-package-agreements --accept-source-agreements \
+      || warn "winget install failed -- install by hand from the docs page."
+    note "On arm64 this runs under Windows x64 emulation, which is fine for a CLI."
+    warn "A fresh install is usually NOT on PATH in this shell. If the next stage"
+    warn "cannot find 'stripe', close this terminal, open a new one, and re-run."
+  else
+    warn "winget not found. Install the CLI by hand:"
+    open_url "https://docs.stripe.com/stripe-cli#install"
+  fi
 else
-  warn "winget not found. Install the CLI by hand:"
-  open_url "https://docs.stripe.com/stripe-cli#install"
+  SKIPPED+=("Stripe CLI, stripe login, and the local webhook signing secret (all #18)")
+  note "Skipped. Re-run this wizard when #18 starts -- saved values are kept."
 fi
 pause
 
 # ── 4 ─────────────────────────────────────────────────────────────────────
 stage "Pair the CLI with your account"
-say "This opens a browser once to link the CLI to your Stripe account."
-if command -v stripe >/dev/null 2>&1; then
-  say "Running: stripe login"
-  stripe login || warn "stripe login did not complete -- run it by hand."
+if (( DO_CLI )); then
+  say "This opens a browser once to link the CLI to your Stripe account."
+  if command -v stripe >/dev/null 2>&1 && stripe --version >/dev/null 2>&1; then
+    say "Running: stripe login"
+    stripe login || warn "stripe login did not complete -- run it by hand."
+  else
+    warn "'stripe' is not usable in this shell."
+    say "Open a new terminal and run:"
+    say ""
+    say "    stripe login"
+    say ""
+    pause "Done that?"
+  fi
 else
-  warn "'stripe' is not on PATH in this shell."
-  say "Open a new terminal and run:"
-  say ""
-  say "    stripe login"
-  say ""
-  pause "Done that?"
+  note "Skipped with stage 3 -- this is #18 work."
 fi
 pause
 
 # ── 5 ─────────────────────────────────────────────────────────────────────
 stage "Webhook signing secret"
-say "'stripe listen' runs in the foreground, so it needs its own terminal."
-say ""
-step "Open a SECOND terminal, cd to this repo, and run:"
-say ""
-say "    stripe listen --forward-to localhost:3000/api/stripe/webhook"
-say ""
-step "On startup it prints: 'Your webhook signing secret is whsec_...'"
-step "Copy that value, then come back here."
-ask_secret STRIPE_WEBHOOK_SECRET "Paste the signing secret (hidden):"
-write_env STRIPE_WEBHOOK_SECRET "$STRIPE_WEBHOOK_SECRET"
-note "Leave that terminal running whenever you test checkout locally."
-warn "This secret is for LOCAL forwarding only. The deployed worker needs its"
-warn "own secret from a real dashboard endpoint, which needs a public URL."
-note "The route /api/stripe/webhook does not exist yet -- #18 builds it and must"
-note "match this path. If it lands elsewhere, re-run stripe listen against that."
+if (( DO_CLI )); then
+  say "'stripe listen' runs in the foreground, so it needs its own terminal."
+  say ""
+  step "Open a SECOND terminal, cd to this repo, and run:"
+  say ""
+  say "    stripe listen --forward-to localhost:3000/api/stripe/webhook"
+  say ""
+  step "On startup it prints: 'Your webhook signing secret is whsec_...'"
+  step "Copy that value, then come back here."
+  ask_secret STRIPE_WEBHOOK_SECRET "Paste the signing secret (hidden):"
+  write_env STRIPE_WEBHOOK_SECRET "$STRIPE_WEBHOOK_SECRET"
+  note "Leave that terminal running whenever you test checkout locally."
+  warn "This secret is for LOCAL forwarding only. The deployed worker needs its"
+  warn "own secret from a real dashboard endpoint, which needs a public URL."
+  note "The route /api/stripe/webhook does not exist yet -- #18 builds it and must"
+  note "match this path. If it lands elsewhere, re-run stripe listen against that."
+else
+  note "Skipped with stage 3 -- this is #18 work."
+  say "Without the CLI there is a second route to a signing secret, and it may"
+  say "be the better one: deploy a preview to Cloudflare, register that public"
+  say "URL as a webhook endpoint in the Stripe dashboard, and read its secret"
+  say "there. That tests the real worker runtime rather than a local forward."
+fi
 pause
 
 # ── 6 ─────────────────────────────────────────────────────────────────────
