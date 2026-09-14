@@ -37,16 +37,24 @@ npm run db:types    # regenerate lib/database.types.ts from the linked schema
 **After any `npm install` that changes `package-lock.json`, regenerate the lockfile with npm 10 before pushing — and do it after the *last* install, not the first:**
 
 ```bash
-rm package-lock.json && npx npm@10.9.2 install --package-lock-only
+npx npm@10.9.2 install --package-lock-only   # over the EXISTING lockfile
 ```
 
-**The `rm` is required.** With a `package-lock.json` already present, npm 10 now dies with `Cannot read properties of null (reading 'edgesOut')` — reproduced 2026-09-09 under Node 24 *and* a clean Node 22 (npm 10.9.3), with and without `node_modules`. The older recipe without the `rm` no longer works.
+**Do not delete `package-lock.json` first.** `rm package-lock.json && …` was the recipe until 2026-09-13, and it now produces a lockfile that breaks the remote build rather than fixing it. A from-scratch resolve on this arm64 Windows machine **drops every optional binary belonging to another platform** — 230 entries when Stripe was added, among them `@cloudflare/workerd-linux-64`, `@esbuild/linux-x64` and `@tailwindcss/oxide-linux-x64-gnu`, which are precisely what the x64 Linux builder needs. npm 11 rejects that lockfile locally too, with a wall of `Missing: … from lock file` naming packages that have nothing to do with whatever you just installed.
+
+Running npm 10 **over** the existing lockfile keeps the tree intact — 986 → 987 entries when Stripe was added, the new package being the only difference — and satisfies both npm versions.
+
+The `Cannot read properties of null (reading 'edgesOut')` crash that originally forced the `rm` (2026-09-09) **did not reproduce** on 2026-09-13 under Node 24 / npm 11.6.2. If it returns, restore the lockfile from git (`git checkout HEAD -- package-lock.json`) and retry — deleting it trades a loud local crash for a silent remote one.
 
 **Regenerating once in the middle of a session is worthless.** Every subsequent `npm install` under npm 11 re-prunes the lockfile. On 2026-09-09 the lockfile was correctly regenerated, then two more installs silently undid it, and the remote build failed at `npm clean-install` with *"Missing: `@emnapi/runtime` from lock file"* — before touching a line of app code. **Verify, don't assume:**
 
 ```bash
-npm ci --dry-run          # must exit 0 under npm 11
-# and under npm 10, which is what Cloudflare runs
+npm ci --dry-run               # must exit 0 under npm 11 (the local default)
+npx npm@10.9.2 ci --dry-run    # and under npm 10, which is what Cloudflare runs
+
+# Then confirm the tree did not collapse. A large drop means cross-platform
+# binaries were pruned, which npm ci alone will not always tell you about.
+node -e "console.log(Object.keys(require('./package-lock.json').packages).length)"
 ```
 
 **This machine is `arm64` (Windows on ARM)** — `node -e "console.log(process.arch)"` says so. Cloudflare builds on **x64 Linux**. So local installs resolve a different set of optional per-platform native binaries than the remote needs, which is the root of this entire class of failure and also why an unsigned ARM64 `@ast-grep/napi` once got blocked by Application Control (below).
