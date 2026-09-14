@@ -65,6 +65,16 @@ checkout returns the unit while the shopper is still plausibly browsing. Expiry
 is computed rather than scheduled (ADR 0010), so the hold stops counting the
 moment it lapses, with or without the #30 webhook.
 
+**Expiry does not touch the Cart.** Three separate things are in play and only
+two of them lapse: the Stripe Session (its payment link stops working), the
+Reservation (it stops holding stock), and the Cart — which lives in the
+shopper's browser, is never account-bound (ADR 0001), and is not written by this
+route at all. Someone who abandons checkout and returns an hour later finds their
+Cart intact; pressing Checkout again mints a fresh Session and a fresh hold. What
+they lose is the guarantee, not the contents: if the last unit sold meanwhile,
+they now get a 409 naming that line, which is the correct answer and the reason
+the hold expires rather than lasting forever.
+
 ## 2. The RPC adds no new `SECURITY DEFINER` surface
 
 `20260825130000_shrink_definer_surface.sql` deliberately reduced definer objects
