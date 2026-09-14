@@ -175,6 +175,134 @@ export function parseResolveRequest(body: unknown): string[] | null {
   return Array.from(new Set((variantIds as string[]).filter((id) => UUID.test(id))));
 }
 
+/**
+ * Validate a POST /api/checkout body, returning the Cart Items to charge for or
+ * null if this is not a request we are willing to serve.
+ *
+ * Deliberately stricter than parseResolveRequest above, which drops malformed
+ * ids and tolerates duplicates. That one feeds a display: degrading to "this
+ * piece is no longer available" is kinder than failing the whole Cart. This one
+ * feeds a charge, where quietly buying a subset of what was asked for is worse
+ * than refusing.
+ *
+ * A repeated variantId is rejected rather than merged. The Cart merges on add
+ * (see addItem), so a duplicate means a broken client -- and if it reached the
+ * hold, `on conflict do nothing` would reserve one line's worth of stock while
+ * the Session charged for two.
+ */
+export function parseCheckoutRequest(body: unknown): CartItem[] | null {
+  if (typeof body !== "object" || body === null) return null;
+
+  const { items } = body as { items?: unknown };
+  if (!Array.isArray(items)) return null;
+  if (items.length === 0 || items.length > MAX_CART_ITEMS) return null;
+
+  const parsed: CartItem[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of items) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const { variantId, quantity } = raw as { variantId?: unknown; quantity?: unknown };
+
+    if (typeof variantId !== "string" || !UUID.test(variantId)) return null;
+    if (typeof quantity !== "number" || !Number.isInteger(quantity) || quantity < 1) return null;
+    if (seen.has(variantId)) return null;
+
+    seen.add(variantId);
+    parsed.push({ variantId, quantity });
+  }
+
+  return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Checkout line items (#15)
+// ---------------------------------------------------------------------------
+
+/**
+ * Confirmed with Kaung on 2026-09-13, matching the $X.XX the storefront
+ * renders. No ADR records this; if SSUNI ever bills in another currency, this
+ * is the only line to change.
+ */
+export const CHECKOUT_CURRENCY = "usd";
+
+/** Everything checkout needs to describe one line to Stripe. */
+export type CheckoutVariant = VariantAvailability & {
+  productName: string;
+  color: string;
+  size: string;
+  imageUrl: string | null;
+};
+
+/** One Stripe `price_data` line. Structural, so this module still imports nothing. */
+export type CheckoutLineItem = {
+  price_data: {
+    currency: string;
+    unit_amount: number;
+    product_data: { name: string; images?: string[] };
+  };
+  quantity: number;
+};
+
+/**
+ * Build Stripe line items from live catalog data (ADR 0008: inline price_data,
+ * never a mirrored Stripe catalog).
+ *
+ * `unit_amount` goes through the same toCents as the subtotal, on purpose. A
+ * second rounding here is how the Cart and the amount charged come to differ by
+ * a cent, and a cent is enough for a customer to notice and not trust you.
+ *
+ * A Variant absent from the map is skipped rather than priced at zero -- the
+ * route has already refused such a Cart with a 409, and a zero-price line would
+ * read as a free gift if that check were ever weakened.
+ *
+ * An image that is not an absolute http(s) URL is dropped rather than sent.
+ * Stripe rejects a relative one with `url_invalid` and fails the entire
+ * Session, so passing the seeded "/images/download.jpeg" straight through makes
+ * a missing photograph block the sale of a Product that is otherwise perfectly
+ * sellable. The picture is decoration; the charge is not. Callers that can
+ * resolve a relative path -- the route knows the request origin -- should hand
+ * this an absolute URL so the photograph survives.
+ */
+export function toStripeLineItems(
+  items: CartItem[],
+  variants: Record<string, CheckoutVariant>,
+): CheckoutLineItem[] {
+  // Parsed rather than pattern-matched, so a "url" like `javascript:` is
+  // rejected by scheme instead of by a regex someone has to keep correct.
+  const isAbsoluteHttpUrl = (url: string): boolean => {
+    try {
+      const { protocol } = new URL(url);
+      return protocol === "http:" || protocol === "https:";
+    } catch {
+      return false;
+    }
+  };
+
+  const lines: CheckoutLineItem[] = [];
+
+  for (const item of items) {
+    const variant = variants[item.variantId];
+    if (!variant) continue;
+
+    lines.push({
+      price_data: {
+        currency: CHECKOUT_CURRENCY,
+        unit_amount: toCents(variant.price),
+        product_data: {
+          name: `${variant.productName} — ${variant.color} / ${variant.size}`,
+          ...(variant.imageUrl && isAbsoluteHttpUrl(variant.imageUrl)
+            ? { images: [variant.imageUrl] }
+            : {}),
+        },
+      },
+      quantity: item.quantity,
+    });
+  }
+
+  return lines;
+}
+
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------

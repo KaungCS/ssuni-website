@@ -5,11 +5,13 @@ import {
   itemCount,
   loadCart,
   MAX_CART_ITEMS,
+  parseCheckoutRequest,
   parseResolveRequest,
   reconcile,
   removeItem,
   saveCart,
   setQuantity,
+  toStripeLineItems,
 } from "./cart";
 
 const HOODIE_ESPRESSO_M = "11111111-1111-4111-8111-111111111111";
@@ -233,5 +235,135 @@ describe("loadCart / saveCart", () => {
 
     expect(loadCart(hostile)).toEqual([]);
     expect(() => saveCart(hostile, [{ variantId: HOODIE_ESPRESSO_M, quantity: 1 }])).not.toThrow();
+  });
+});
+
+describe("parseCheckoutRequest", () => {
+  const id = (n: number) => `0a7b617d-f5b2-4296-8d0d-cda1786050${String(n).padStart(2, "0")}`;
+
+  it("accepts a well-formed cart", () => {
+    expect(
+      parseCheckoutRequest({ items: [{ variantId: id(1), quantity: 2 }] }),
+    ).toEqual([{ variantId: id(1), quantity: 2 }]);
+  });
+
+  it("rejects an empty cart", () => {
+    expect(parseCheckoutRequest({ items: [] })).toBeNull();
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseCheckoutRequest(null)).toBeNull();
+    expect(parseCheckoutRequest("nope")).toBeNull();
+  });
+
+  it("rejects a missing or non-array items field", () => {
+    expect(parseCheckoutRequest({})).toBeNull();
+    expect(parseCheckoutRequest({ items: "x" })).toBeNull();
+  });
+
+  it("rejects more items than the cap", () => {
+    const items = Array.from({ length: MAX_CART_ITEMS + 1 }, (_, i) => ({
+      variantId: id(i % 90),
+      quantity: 1,
+    }));
+    expect(parseCheckoutRequest({ items })).toBeNull();
+  });
+
+  it("rejects a malformed uuid rather than dropping it", () => {
+    expect(parseCheckoutRequest({ items: [{ variantId: "nope", quantity: 1 }] })).toBeNull();
+  });
+
+  it("rejects a non-positive or non-integer quantity", () => {
+    expect(parseCheckoutRequest({ items: [{ variantId: id(1), quantity: 0 }] })).toBeNull();
+    expect(parseCheckoutRequest({ items: [{ variantId: id(1), quantity: -1 }] })).toBeNull();
+    expect(parseCheckoutRequest({ items: [{ variantId: id(1), quantity: 1.5 }] })).toBeNull();
+  });
+
+  it("rejects a repeated variantId", () => {
+    expect(
+      parseCheckoutRequest({
+        items: [
+          { variantId: id(1), quantity: 1 },
+          { variantId: id(1), quantity: 2 },
+        ],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("toStripeLineItems", () => {
+  const vid = "0a7b617d-f5b2-4296-8d0d-cda178605c80";
+
+  const variant = {
+    price: 19.99,
+    availableStock: 10,
+    productName: "Rabbit Hole Hoodie",
+    color: "Espresso",
+    size: "M",
+    imageUrl: "https://example.test/hoodie.jpg",
+  };
+
+  it("converts dollars to integer cents", () => {
+    const [line] = toStripeLineItems([{ variantId: vid, quantity: 3 }], { [vid]: variant });
+    expect(line.price_data.unit_amount).toBe(1999);
+    expect(line.quantity).toBe(3);
+  });
+
+  it("never emits a fractional cent", () => {
+    // 19.99 * 3 is 59.97000000000001 in binary floating point. Stripe rejects a
+    // non-integer unit_amount, and the tail would otherwise reach the charge.
+    const [line] = toStripeLineItems(
+      [{ variantId: vid, quantity: 3 }],
+      { [vid]: { ...variant, price: 19.99 } },
+    );
+    expect(Number.isInteger(line.price_data.unit_amount)).toBe(true);
+  });
+
+  it("names the line with the product, colour and size", () => {
+    const [line] = toStripeLineItems([{ variantId: vid, quantity: 1 }], { [vid]: variant });
+    expect(line.price_data.product_data.name).toBe("Rabbit Hole Hoodie — Espresso / M");
+  });
+
+  it("omits images entirely when there is no image", () => {
+    const [line] = toStripeLineItems(
+      [{ variantId: vid, quantity: 1 }],
+      { [vid]: { ...variant, imageUrl: null } },
+    );
+    expect(line.price_data.product_data.images).toBeUndefined();
+  });
+
+  it("omits a site-relative image rather than sending it to Stripe", () => {
+    // The seeded catalog stores "/images/download.jpeg". Stripe rejects a
+    // relative URL with `url_invalid` and fails the whole Session, so a missing
+    // photograph would block the sale of a Product that is otherwise fine.
+    const [line] = toStripeLineItems(
+      [{ variantId: vid, quantity: 1 }],
+      { [vid]: { ...variant, imageUrl: "/images/download.jpeg" } },
+    );
+    expect(line.price_data.product_data.images).toBeUndefined();
+  });
+
+  it("keeps an absolute https image", () => {
+    const [line] = toStripeLineItems([{ variantId: vid, quantity: 1 }], { [vid]: variant });
+    expect(line.price_data.product_data.images).toEqual(["https://example.test/hoodie.jpg"]);
+  });
+
+  it("omits a non-http image url", () => {
+    const [line] = toStripeLineItems(
+      [{ variantId: vid, quantity: 1 }],
+      { [vid]: { ...variant, imageUrl: "javascript:alert(1)" } },
+    );
+    expect(line.price_data.product_data.images).toBeUndefined();
+  });
+
+  it("skips a variant absent from the map rather than pricing it at zero", () => {
+    expect(toStripeLineItems([{ variantId: vid, quantity: 1 }], {})).toEqual([]);
+  });
+
+  it("agrees with reconcile about the total", () => {
+    const items = [{ variantId: vid, quantity: 2 }];
+    const lines = toStripeLineItems(items, { [vid]: variant });
+    const stripeTotal = lines.reduce((n, l) => n + l.price_data.unit_amount * l.quantity, 0);
+    expect(stripeTotal).toBe(Math.round(reconcile(items, { [vid]: variant }).subtotal * 100));
   });
 });

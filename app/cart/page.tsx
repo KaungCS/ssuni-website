@@ -64,6 +64,45 @@ export default function CartPage() {
   // The Variant whose last quantity edit was clamped, so the snap-back can be
   // explained. Transient UI state, never persisted.
   const [clampedVariantId, setClampedVariantId] = useState<string | null>(null);
+  // Checkout is a separate failure surface from resolve: the Cart is still
+  // perfectly renderable when Stripe is unreachable, so this never replaces the
+  // page the way the resolve error state does.
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [checkingOut, setCheckingOut] = useState(false);
+
+  /**
+   * Hand the Cart to POST /api/checkout and follow the Session it returns.
+   *
+   * Sends ids and quantities only. The route re-reads every price from Supabase
+   * (ADR 0008) and would ignore a price sent from here, which is the point: a
+   * browser must never be able to name what it is charged.
+   */
+  async function startCheckout() {
+    setCheckingOut(true);
+    setCheckoutError(null);
+    try {
+      const res = await fetch("/api/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setCheckoutError(data.error ?? "Checkout is unavailable right now.");
+        setCheckingOut(false);
+        return;
+      }
+      // Leaving the origin for Stripe's hosted page (ADR 0008). `checkingOut`
+      // is deliberately left true -- the navigation is in flight, and
+      // re-enabling the button here would let a second click create a second
+      // Session and a second hold on the same stock.
+      window.location.href = data.url;
+    } catch {
+      setCheckoutError("Checkout is unavailable right now.");
+      setCheckingOut(false);
+    }
+  }
 
   // Joined into a string so the effect below depends on the *ids*, not on a new
   // array identity every render.
@@ -182,14 +221,19 @@ export default function CartPage() {
         <p className="text-xs font-belleza text-ssuni-slate">
           Shipping and taxes are calculated at checkout.
         </p>
-        {/* Checkout arrives with #15, which is also where stock is actually
-            held (ADR 0010). Everything above is UX, not a correctness gate. */}
+        {/* The button starts the Session; the hold behind it is what actually
+            decides whether the stock can be sold (ADR 0010). Everything above
+            is UX, not a correctness gate. */}
         <button
-          disabled
-          className="border border-ssuni-brown px-10 py-4 text-xs uppercase tracking-widest font-belleza opacity-40 cursor-not-allowed"
+          onClick={startCheckout}
+          disabled={checkingOut || items.length === 0}
+          className="border border-ssuni-brown px-10 py-4 text-xs uppercase tracking-widest font-belleza transition-colors hover:bg-ssuni-brown hover:text-ssuni-light1 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ssuni-brown cursor-pointer"
         >
-          Checkout
+          {checkingOut ? "Taking you to checkout…" : "Checkout"}
         </button>
+        {checkoutError && (
+          <p className="font-belleza text-sm text-ssuni-brown">{checkoutError}</p>
+        )}
       </div>
     </CartShell>
   );
