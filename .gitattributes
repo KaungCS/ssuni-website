@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings: core.autocrlf=true on Windows would
+# otherwise give the shebang a trailing CR, and bash reports that as
+# "No such file or directory" -- an error that names the script, not the cause.
+*.sh text eol=lf
