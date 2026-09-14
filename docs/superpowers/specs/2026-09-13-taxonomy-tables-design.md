@@ -34,7 +34,7 @@ that omitted it would tell the client a Term was safe when it was not.
 
 ADR 0013 says the facets view "survives, re-pointed, as what answers the flag."
 Rejected. Its only caller is `getCatalogFacets()`, which is being replaced, and
-`catalog_taxonomy` answers `has_products` directly. Keeping both means two views
+`catalog_taxonomy` answers availability directly. Keeping both means two views
 computing the same predicate over the same rows.
 
 ### 3. `lib/taxonomy.ts` is deleted, not emptied
@@ -66,6 +66,12 @@ Next's bundled docs (`generate-metadata.md`) state that memoization spans
 `cache` is the documented mechanism when the data source is not `fetch`. Wrapping
 `getCatalogTaxonomy` in `cache()` gives one taxonomy read per request. The
 deferred-decision comment in the page is replaced with this outcome.
+
+### 6. Terms carry a product count, not an availability boolean
+
+Every storefront measured in the comparison section below shows **Knitwear (12)**
+rather than a bare checkbox, and `count(*)` is the same scan as `exists`. The one
+free piece of convention-following in this change, so it happens now.
 
 ## Schema
 
@@ -207,23 +213,30 @@ Hidden question rather than re-implementing it.
 ```sql
 create view public.catalog_taxonomy with (security_invoker = true) as
   select 'department' as dimension, d.slug, d.name, d.sort_order,
-         exists (select 1 from public.products p where p.department = d.slug)
-           as has_products
+         (select count(*) from public.products p where p.department = d.slug)
+           as product_count
   from public.departments d
   union all
   select 'category', c.slug, c.name, c.sort_order,
-         exists (select 1 from public.products p where p.category = c.slug)
+         (select count(*) from public.products p where p.category = c.slug)
   from public.categories c
   union all
   select 'collection', col.slug, col.name, col.sort_order,
-         exists (select 1 from public.product_collections pc
-                 where pc.collection_slug = col.slug)
+         (select count(*) from public.product_collections pc
+          where pc.collection_slug = col.slug)
   from public.collections col;
 ```
+
+A count rather than a boolean, per the commerce-schema comparison below: every
+storefront shows **Knitwear (12)**, and the scan is identical either way. The
+drawer treats `product_count > 0` as the availability test.
 
 The collection branch needs no join to `products` precisely because of the
 policy above — under invoker rights, a Hidden Product's join rows are already
 invisible.
+
+Note this count is **global**, not narrowed by the shopper's active filters. That
+limitation is pre-existing and is spelled out under the comparison below.
 
 `taxonomy_term_usage` has the same three-branch shape but reports
 `count(*)` per Term instead of `exists`, and carries no `sort_order` — it is a
@@ -240,7 +253,8 @@ export type TaxonomyTerm = {
   slug: string;
   name: string;
   sortOrder: number;
-  hasProducts: boolean;
+  /** Global, not narrowed by active filters. See the comparison section. */
+  productCount: number;
 };
 
 export type CatalogTaxonomy = {
@@ -292,8 +306,9 @@ or take props.
 ### Components
 
 `CatalogFilterDrawer` takes `taxonomy: CatalogTaxonomy` instead of `facets`,
-renders the terms where `hasProducts` is true, and reads each checkbox label from
-`term.name`. Order comes from the view, so the component does no sorting. It
+renders the terms where `productCount > 0`, reads each checkbox label from
+`term.name`, and shows the count beside it. Order comes from the view, so the
+component does no sorting. It
 remains a `next/form` GET form keyed on the current search params — neither trap
 recorded in CLAUDE.md is affected.
 
@@ -324,6 +339,87 @@ filter correctly and appear in the drawer while being absent from the navigation
 database migrates from a laptop while code deploys from a push, so one side is
 ahead of the other in between. Acceptable pre-launch, not in October.
 
+## How this compares to standard commerce schemas
+
+SSUNI is a small clothing brand, not a platform. The bar for any choice here is
+**"is this what a working storefront already does"**, not "is this clever". The
+three reference points below are the ones worth measuring against: Shopify,
+because it is what a brand this size would otherwise be running on;
+Magento/Adobe Commerce, as the enterprise end; and Saleor/Medusa as modern
+open-source headless implementations.
+
+| Concern | This design | Shopify | Magento | Verdict |
+|---|---|---|---|---|
+| Collection membership | `product_collections` join table | `collects` join table | `catalog_category_product` | **Match** |
+| Categories per Product | one, by FK | one `product_type` | many, via the tree | **Match Shopify** |
+| Category hierarchy | flat, two dimensions | flat, plus Collections | nested tree | **Match Shopify** |
+| Merchandised order | `sort_order` column | `position` on the join | `position` | **Match** |
+| Term identity | slug is the primary key | numeric id + `handle` | `entity_id` + `url_key` | **Diverge — accepted** |
+| Retiring a Term | delete, restricted | archive or delete | `is_active` flag | **Diverge — ADR 0013** |
+| Facet options | global availability | narrowed by active filters | narrowed ("layered nav") | **Diverge — gap, see below** |
+| Facet counts | none | shown | shown | **Adopting now** |
+
+### What the comparison actually settles
+
+**The core model is already the mainstream one.** A Collections join table with a
+position column, a controlled vocabulary the merchant edits, and delete
+protection is what Shopify has shipped for fifteen years. Nothing here is novel.
+
+**The category tree is deliberately rejected, not overlooked.** Magento, Saleor
+and commercetools all model categories as a nested tree, and it is tempting to
+read that as the "real" way. It is the *enterprise* way. Shopify — the platform a
+brand this size would actually be on — gives a Product a single flat
+`product_type` and does its merchandising through Collections, which is precisely
+the shape here: two flat dimensions plus a curated join table. Adopting a tree
+would mean recursive queries, "include descendants" semantics, and a UI for
+nesting, to express three Departments over seven Categories. That is the
+pioneering move, not avoiding it.
+
+**One Category per Product follows Shopify for the same reason**, and is what the
+storefront already does — #49 does not narrow anything.
+
+**Slug-as-primary-key is the one real divergence, and it stays.** Every platform
+listed uses a surrogate key with the slug as a separate unique column, because
+slugs get rewritten and a slug key propagates that rewrite through every
+referencing row. Two things make it safe here: `on update cascade` handles the
+rewrite correctly, and the tables hold thirteen rows. Adding an `id uuid` column
+that no query reads would be convention-following as cargo cult — the substance
+of the convention is *"slugs are stable identity, display names are what change"*,
+and this design already does exactly that.
+
+### Adopted now: counts instead of a boolean
+
+Every storefront in the table shows **Knitwear (12)** rather than a bare
+checkbox. Returning `product_count` costs the same query as `exists` — it is the
+same scan — and it tells a shopper whether a filter is worth pressing. So
+`catalog_taxonomy` returns a count, and the drawer renders it. This is the one
+place where following convention is free, so it happens here rather than later.
+
+### Deferred: filter-aware facets
+
+This is the substantive gap, and it should be written down plainly rather than
+left to look solved.
+
+`product_count` is **global** — "how many visible Products carry this Term
+anywhere". Real faceted navigation narrows each dimension's options by the
+filters already applied: pick Women, and the Category list shows only Categories
+that have Women's Products, with counts to match. Ours does not. A shopper who
+filters to Women is still offered **Collectibles**, ticks it, and gets nothing —
+exactly what story 12 says must never happen.
+
+**This is pre-existing, not introduced here.** `getCatalogFacets()` is global
+today and the drawer has always behaved this way. But it is a genuine
+divergence from every storefront in the table.
+
+The fix is a Postgres function taking the active filters and returning each
+dimension's counts computed with the *other* dimensions applied — a term's own
+dimension is excluded from its own filter, or multi-select within a dimension
+becomes impossible. That restructures the page's data flow into two stages
+(vocabulary → parse → facets and Products in parallel). It is the right shape and
+it is not a launch blocker. Filed as
+[#53](https://github.com/KaungCS/ssuni-website/issues/53); October work,
+alongside the Admin Dashboard.
+
 ## Testing
 
 TDD is not required here — CLAUDE.md scopes that to Cart math, the reservation
@@ -331,14 +427,16 @@ RPC, and the Stripe webhook. Schema is proved by querying the real database.
 
 **`supabase/tests/rls.mjs`** — note this is a rewrite, not only an extension. The
 file currently has five assertions reading `catalog_facets`, and that view is
-being dropped; they are re-pointed at `catalog_taxonomy`'s `has_products` flag,
+being dropped; they are re-pointed at `catalog_taxonomy`'s `product_count`,
 which is the same invariant expressed against the replacement. It also selects
 `collections` from `products` in two places, which the dropped column breaks.
 New coverage:
 - anon can read all three vocabulary tables and `catalog_taxonomy`
 - anon writes to each are rejected
-- `has_products` for a Term flips to `false` when the only Product carrying it is
-  hidden, and back on revert — reusing the existing hoodie hide/revert dance
+- a Term's `product_count` drops when the only Product carrying it is hidden, and
+  returns on revert — reusing the existing hoodie hide/revert dance. Assert the
+  drop as a property (it decreased, it reached zero for an exclusive Term), never
+  against a hardcoded number
 - `product_collections` rows for a Hidden Product are invisible to anon
 
 **`supabase/tests/admin-path.sql`** extends, inside its rolled-back transaction:
@@ -364,6 +462,10 @@ including the raw-slug fallback.
   ADR 0013.
 - The Admin Dashboard's category editor (ADR 0007) — these tables are its
   prerequisite, not part of it.
+- **Filter-aware facets** — narrowing each dimension's options and counts by the
+  filters already applied. The one real divergence from standard commerce
+  practice, pre-existing rather than introduced here, and deferred to October as
+  [#53](https://github.com/KaungCS/ssuni-website/issues/53).
 - Ordering *within* a Collection. No one has asked for it; a `position` column on
   the join table is the shape if they do.
 - `NOT NULL` on the Product taxonomy columns.
