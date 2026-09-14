@@ -175,6 +175,46 @@ export function parseResolveRequest(body: unknown): string[] | null {
   return Array.from(new Set((variantIds as string[]).filter((id) => UUID.test(id))));
 }
 
+/**
+ * Validate a POST /api/checkout body, returning the Cart Items to charge for or
+ * null if this is not a request we are willing to serve.
+ *
+ * Deliberately stricter than parseResolveRequest above, which drops malformed
+ * ids and tolerates duplicates. That one feeds a display: degrading to "this
+ * piece is no longer available" is kinder than failing the whole Cart. This one
+ * feeds a charge, where quietly buying a subset of what was asked for is worse
+ * than refusing.
+ *
+ * A repeated variantId is rejected rather than merged. The Cart merges on add
+ * (see addItem), so a duplicate means a broken client -- and if it reached the
+ * hold, `on conflict do nothing` would reserve one line's worth of stock while
+ * the Session charged for two.
+ */
+export function parseCheckoutRequest(body: unknown): CartItem[] | null {
+  if (typeof body !== "object" || body === null) return null;
+
+  const { items } = body as { items?: unknown };
+  if (!Array.isArray(items)) return null;
+  if (items.length === 0 || items.length > MAX_CART_ITEMS) return null;
+
+  const parsed: CartItem[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of items) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const { variantId, quantity } = raw as { variantId?: unknown; quantity?: unknown };
+
+    if (typeof variantId !== "string" || !UUID.test(variantId)) return null;
+    if (typeof quantity !== "number" || !Number.isInteger(quantity) || quantity < 1) return null;
+    if (seen.has(variantId)) return null;
+
+    seen.add(variantId);
+    parsed.push({ variantId, quantity });
+  }
+
+  return parsed;
+}
+
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------

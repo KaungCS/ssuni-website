@@ -5,6 +5,7 @@ import {
   itemCount,
   loadCart,
   MAX_CART_ITEMS,
+  parseCheckoutRequest,
   parseResolveRequest,
   reconcile,
   removeItem,
@@ -233,5 +234,58 @@ describe("loadCart / saveCart", () => {
 
     expect(loadCart(hostile)).toEqual([]);
     expect(() => saveCart(hostile, [{ variantId: HOODIE_ESPRESSO_M, quantity: 1 }])).not.toThrow();
+  });
+});
+
+describe("parseCheckoutRequest", () => {
+  const id = (n: number) => `0a7b617d-f5b2-4296-8d0d-cda1786050${String(n).padStart(2, "0")}`;
+
+  it("accepts a well-formed cart", () => {
+    expect(
+      parseCheckoutRequest({ items: [{ variantId: id(1), quantity: 2 }] }),
+    ).toEqual([{ variantId: id(1), quantity: 2 }]);
+  });
+
+  it("rejects an empty cart", () => {
+    expect(parseCheckoutRequest({ items: [] })).toBeNull();
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseCheckoutRequest(null)).toBeNull();
+    expect(parseCheckoutRequest("nope")).toBeNull();
+  });
+
+  it("rejects a missing or non-array items field", () => {
+    expect(parseCheckoutRequest({})).toBeNull();
+    expect(parseCheckoutRequest({ items: "x" })).toBeNull();
+  });
+
+  it("rejects more items than the cap", () => {
+    const items = Array.from({ length: MAX_CART_ITEMS + 1 }, (_, i) => ({
+      variantId: id(i % 90),
+      quantity: 1,
+    }));
+    expect(parseCheckoutRequest({ items })).toBeNull();
+  });
+
+  it("rejects a malformed uuid rather than dropping it", () => {
+    expect(parseCheckoutRequest({ items: [{ variantId: "nope", quantity: 1 }] })).toBeNull();
+  });
+
+  it("rejects a non-positive or non-integer quantity", () => {
+    expect(parseCheckoutRequest({ items: [{ variantId: id(1), quantity: 0 }] })).toBeNull();
+    expect(parseCheckoutRequest({ items: [{ variantId: id(1), quantity: -1 }] })).toBeNull();
+    expect(parseCheckoutRequest({ items: [{ variantId: id(1), quantity: 1.5 }] })).toBeNull();
+  });
+
+  it("rejects a repeated variantId", () => {
+    expect(
+      parseCheckoutRequest({
+        items: [
+          { variantId: id(1), quantity: 1 },
+          { variantId: id(1), quantity: 2 },
+        ],
+      }),
+    ).toBeNull();
   });
 });
