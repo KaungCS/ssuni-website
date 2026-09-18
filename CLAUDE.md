@@ -32,6 +32,25 @@ npm run db:types    # regenerate lib/database.types.ts from the linked schema
 
 **Do not run `npm run build`, `npm run cf:build` or `npm run cf:preview` while `npm run dev` is running.** They rewrite `.next`, which the dev server is reading from live, and it starts serving half-overwritten chunks: individual routes return 500 while others stay fine, and the log shows Next worker crashes ("Jest worker encountered N child process exceptions") rather than anything resembling the real problem. It looks exactly like a bug in whatever you last edited. Recovery: stop the dev server, `rm -rf .next`, restart. On Windows, confirm it actually died — killing the `npm` wrapper often leaves the `node` child holding port 3000, and that orphan is what gets corrupted. Hit 2026-08-26; cost more debugging time than the feature it masked.
 
+**Stopping `npm run cf:preview` on Windows needs the whole process tree, not the port holder.** It runs six processes deep — `bash` → `npm run cf:preview` → `cmd` → `opennextjs-cloudflare` → `cmd` → `npm exec wrangler` → `cmd` → `wrangler dev` → `workerd.exe` — and **`wrangler dev` restarts `workerd` as fast as you kill it**, so killing whatever holds port 8787 looks like it failed: the port stays listening, under a new PID each time. Walk up from the port holder and kill the root:
+
+```powershell
+$cur = (Get-NetTCPConnection -LocalPort 8787 -State Listen).OwningProcess | Select-Object -First 1
+$kill = @()
+while ($cur -and $cur -ne 0) {
+  $ci = Get-CimInstance Win32_Process -Filter "ProcessId = $cur"
+  # Stop at the first ancestor that is not part of the preview chain. Without
+  # this guard the walk continues into the terminal and the editor that
+  # launched it, and kills those too.
+  if (-not $ci -or $ci.CommandLine -notmatch 'workerd|wrangler|opennext|cf:preview') { break }
+  $kill += $ci.ProcessId
+  $cur = $ci.ParentProcessId
+}
+$kill | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+```
+
+`Get-Process -Name workerd | Stop-Process` does not do it either — the name is the mangled `downloaded-@cloudflare-workerd-windows-64-workerd.exe.exe`, and the supervisor respawns it regardless. Verified 2026-09-18 while checking the #18 webhook under workerd.
+
 `npm run lint` should report **6 warnings, 0 errors** (all `<img>`-vs-`next/image`, tracked in issue #11). If it reports thousands, a build-output directory has escaped the ignore list in `eslint.config.mjs` — the patterns are deliberately unanchored (`**/.next/**`, `**/.open-next/**`, …) because root-anchored ones missed a nested build dir once and buried the real findings 800:1. **Add any new build/output directory to both `eslint.config.mjs` and `.gitignore`.**
 
 **After any `npm install` that changes `package-lock.json`, regenerate the lockfile with npm 10 before pushing — and do it after the *last* install, not the first:**
