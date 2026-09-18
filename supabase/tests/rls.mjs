@@ -173,6 +173,7 @@ const held = await svc("POST", "reservations", {
   body: {
     variant_id: target.id,
     quantity: 2,
+    unit_price: 19.99,
     stripe_session_id: "cs_test_verification_probe",
     expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
   },
@@ -338,7 +339,7 @@ try {
   const anonCall = await rpc(ANON, {
     p_session_id: "cs_test_rc_anon",
     p_expires_at: inThirtyMinutes(),
-    p_items: [{ variant_id: testVariant.id, quantity: 1 }],
+    p_items: [{ variant_id: testVariant.id, quantity: 1, unit_price: 19.99 }],
   });
   check("anon cannot execute reserve_cart", anonCall.status !== 200, `status ${anonCall.status}`);
 
@@ -348,7 +349,7 @@ try {
   const ok = await rpc(SERVICE, {
     p_session_id: "cs_test_rc_ok_1",
     p_expires_at: inThirtyMinutes(),
-    p_items: [{ variant_id: testVariant.id, quantity: 2 }],
+    p_items: [{ variant_id: testVariant.id, quantity: 2, unit_price: 19.99 }],
   });
   check("a satisfiable hold returns no shortfalls",
     ok.status === 200 && ok.json?.length === 0, `status ${ok.status} ${JSON.stringify(ok.json)}`);
@@ -361,7 +362,7 @@ try {
   const tooMany = await rpc(SERVICE, {
     p_session_id: "cs_test_rc_short_1",
     p_expires_at: inThirtyMinutes(),
-    p_items: [{ variant_id: testVariant.id, quantity: 99 }],
+    p_items: [{ variant_id: testVariant.id, quantity: 99, unit_price: 19.99 }],
   });
   check("an unsatisfiable hold reports the shortfall",
     tooMany.json?.[0]?.available === 3, JSON.stringify(tooMany.json));
@@ -373,7 +374,7 @@ try {
   const ghost = await rpc(SERVICE, {
     p_session_id: "cs_test_rc_ghost_1",
     p_expires_at: inThirtyMinutes(),
-    p_items: [{ variant_id: "00000000-0000-4000-8000-000000000000", quantity: 1 }],
+    p_items: [{ variant_id: "00000000-0000-4000-8000-000000000000", quantity: 1, unit_price: 19.99 }],
   });
   check("an unknown variant reports available 0",
     ghost.json?.[0]?.available === 0, JSON.stringify(ghost.json));
@@ -384,9 +385,9 @@ try {
 
   const [raceA, raceB] = await Promise.all([
     rpc(SERVICE, { p_session_id: "cs_test_rc_race_a", p_expires_at: inThirtyMinutes(),
-                   p_items: [{ variant_id: testVariant.id, quantity: 1 }] }),
+                   p_items: [{ variant_id: testVariant.id, quantity: 1, unit_price: 19.99 }] }),
     rpc(SERVICE, { p_session_id: "cs_test_rc_race_b", p_expires_at: inThirtyMinutes(),
-                   p_items: [{ variant_id: testVariant.id, quantity: 1 }] }),
+                   p_items: [{ variant_id: testVariant.id, quantity: 1, unit_price: 19.99 }] }),
   ]);
 
   const winners = [raceA, raceB].filter((r) => r.status === 200 && r.json?.length === 0).length;

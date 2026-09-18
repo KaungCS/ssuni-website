@@ -178,6 +178,11 @@ step "Sign in, or create an account if you do not have one."
 step "Check the dashboard header says 'Test mode'. Toggle it on if not."
 warn "Every key below must start with pk_test_ or sk_test_."
 warn "A live key here would take real money during development."
+note "Stripe now offers Sandboxes alongside classic Test mode, and BOTH issue"
+note "sk_test_ keys -- so the prefix cannot tell them apart. Either works, but"
+note "note which one you take keys from: stage 4 has to match it exactly, and"
+note "getting that wrong fails silently. SSUNI's keys came from a Sandbox named"
+note "'Ssuni sandbox', not classic Test mode, despite the URL above."
 pause "Signed in and in Test mode?"
 
 # ── 2 ─────────────────────────────────────────────────────────────────────
@@ -243,9 +248,34 @@ pause
 stage "Pair the CLI with your account"
 if (( DO_CLI )); then
   say "This opens a browser once to link the CLI to your Stripe account."
+  say ""
+  say "The page says 'Choose an environment' and lists your Live account plus"
+  say "one row per Sandbox -- classic 'Test mode' is listed as a Sandbox too."
+  step "Enable the CLI for the SAME environment your keys came from (stage 1)."
+  warn "Never the Live account. Switching to live is issue #26."
+  warn "Picking the wrong environment is SILENT: 'stripe listen' connects fine"
+  warn "and forwards nothing, which looks exactly like a broken webhook route."
+  say ""
   if command -v stripe >/dev/null 2>&1 && stripe --version >/dev/null 2>&1; then
     say "Running: stripe login"
     stripe login || warn "stripe login did not complete -- run it by hand."
+
+    # Verify rather than trust. The CLI's account and the account behind
+    # STRIPE_SECRET_KEY must be the same one, or every event goes to an
+    # environment this app never creates a Session in.
+    cli_acct=$(stripe whoami 2>/dev/null | grep -oE 'acct_[A-Za-z0-9]+' | head -n1)
+    key_acct=$(curl -s https://api.stripe.com/v1/account -u "$STRIPE_SECRET_KEY:" \
+               | grep -oE 'acct_[A-Za-z0-9]+' | head -n1)
+    if [[ -z "$cli_acct" || -z "$key_acct" ]]; then
+      warn "Could not confirm the CLI and the secret key are on the same account."
+      say  "Check by hand: 'stripe whoami' against the dashboard the keys came from."
+    elif [[ "$cli_acct" == "$key_acct" ]]; then
+      note "CLI and STRIPE_SECRET_KEY agree: $cli_acct"
+    else
+      warn "MISMATCH. The CLI is on $cli_acct, the secret key belongs to $key_acct."
+      warn "'stripe listen' would forward nothing. Re-run 'stripe login' and pick"
+      warn "the environment the key came from."
+    fi
   else
     warn "'stripe' is not usable in this shell."
     say "Open a new terminal and run:"
@@ -266,7 +296,12 @@ if (( DO_CLI )); then
   say ""
   step "Open a SECOND terminal, cd to this repo, and run:"
   say ""
-  say "    stripe listen --forward-to localhost:3000/api/stripe/webhook"
+  say "    stripe listen --events checkout.session.completed \\"
+  say "      --forward-to localhost:3000/api/stripe/webhook"
+  say ""
+  note "--events is required as of CLI 1.51 -- without it the CLI refuses with"
+  note "'must specify events to forward'. Narrow on purpose: that is the only"
+  note "event the route handles. Issue #30 adds checkout.session.expired."
   say ""
   step "On startup it prints: 'Your webhook signing secret is whsec_...'"
   step "Copy that value, then come back here."
@@ -275,8 +310,7 @@ if (( DO_CLI )); then
   note "Leave that terminal running whenever you test checkout locally."
   warn "This secret is for LOCAL forwarding only. The deployed worker needs its"
   warn "own secret from a real dashboard endpoint, which needs a public URL."
-  note "The route /api/stripe/webhook does not exist yet -- #18 builds it and must"
-  note "match this path. If it lands elsewhere, re-run stripe listen against that."
+  note "The route /api/stripe/webhook shipped with #18 and matches this path."
 else
   note "Skipped with stage 3 -- this is #18 work."
   say "Without the CLI there is a second route to a signing secret, and it may"

@@ -32,6 +32,25 @@ npm run db:types    # regenerate lib/database.types.ts from the linked schema
 
 **Do not run `npm run build`, `npm run cf:build` or `npm run cf:preview` while `npm run dev` is running.** They rewrite `.next`, which the dev server is reading from live, and it starts serving half-overwritten chunks: individual routes return 500 while others stay fine, and the log shows Next worker crashes ("Jest worker encountered N child process exceptions") rather than anything resembling the real problem. It looks exactly like a bug in whatever you last edited. Recovery: stop the dev server, `rm -rf .next`, restart. On Windows, confirm it actually died — killing the `npm` wrapper often leaves the `node` child holding port 3000, and that orphan is what gets corrupted. Hit 2026-08-26; cost more debugging time than the feature it masked.
 
+**Stopping `npm run cf:preview` on Windows needs the whole process tree, not the port holder.** It runs six processes deep — `bash` → `npm run cf:preview` → `cmd` → `opennextjs-cloudflare` → `cmd` → `npm exec wrangler` → `cmd` → `wrangler dev` → `workerd.exe` — and **`wrangler dev` restarts `workerd` as fast as you kill it**, so killing whatever holds port 8787 looks like it failed: the port stays listening, under a new PID each time. Walk up from the port holder and kill the root:
+
+```powershell
+$cur = (Get-NetTCPConnection -LocalPort 8787 -State Listen).OwningProcess | Select-Object -First 1
+$kill = @()
+while ($cur -and $cur -ne 0) {
+  $ci = Get-CimInstance Win32_Process -Filter "ProcessId = $cur"
+  # Stop at the first ancestor that is not part of the preview chain. Without
+  # this guard the walk continues into the terminal and the editor that
+  # launched it, and kills those too.
+  if (-not $ci -or $ci.CommandLine -notmatch 'workerd|wrangler|opennext|cf:preview') { break }
+  $kill += $ci.ProcessId
+  $cur = $ci.ParentProcessId
+}
+$kill | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+```
+
+`Get-Process -Name workerd | Stop-Process` does not do it either — the name is the mangled `downloaded-@cloudflare-workerd-windows-64-workerd.exe.exe`, and the supervisor respawns it regardless. Verified 2026-09-18 while checking the #18 webhook under workerd.
+
 `npm run lint` should report **6 warnings, 0 errors** (all `<img>`-vs-`next/image`, tracked in issue #11). If it reports thousands, a build-output directory has escaped the ignore list in `eslint.config.mjs` — the patterns are deliberately unanchored (`**/.next/**`, `**/.open-next/**`, …) because root-anchored ones missed a nested build dir once and buried the real findings 800:1. **Add any new build/output directory to both `eslint.config.mjs` and `.gitignore`.**
 
 **After any `npm install` that changes `package-lock.json`, regenerate the lockfile with npm 10 before pushing — and do it after the *last* install, not the first:**
@@ -106,6 +125,14 @@ Next.js 16 App Router site (React 19, TypeScript, Tailwind CSS v4) for SSUNI, a 
 - **`components/CartProvider.tsx`** — reads `localStorage` through **`useSyncExternalStore`, not a load effect plus a save-on-change effect**. That obvious shape has a bug: the save effect also runs on mount with the empty initial state and writes `[]` over the shopper's stored Cart. The final contents recover a moment later, so asserting on them proves nothing — the damage is the transient write, which another tab or a reload landing in that window reads and keeps. Reading through an external store removes the bug by construction and gives cross-tab sync for free. `components/CartProvider.test.tsx` records every write to the Cart key and fails if any is an empty Cart; it is the only jsdom test in the repo.
 
 - **`app/api/cart/resolve/route.ts`** — `POST`, never `GET`. The response carries live prices and Available Stock, and a cacheable response is a stale-price bug. It returns **facts and never verdicts**, so it holds no logic — even its input validation is `parseResolveRequest` in `lib/cart.ts`, which is what keeps it covered by the pure test seam and caps how many ids one request can turn into a Supabase `.in()` filter.
+
+- **`app/api/stripe/webhook/route.ts`** — `checkout.session.completed` (#18). Deliberately thin: the four writes behind one paid Session (Order, Order Items, consumed Reservations, stock decrement) happen inside `public.complete_checkout`, as one transaction, because supabase-js cannot open one. Idempotency is the unique index on `orders.stripe_session_id` and nothing else.
+
+  Two traps. **Signature verification must use `constructEventAsync` with `Stripe.createSubtleCryptoProvider()`** — the synchronous `constructEvent` reaches for Node's crypto, which workerd does not have, so it passes `npm run dev` and fails only on the runtime this deploys to (same class as the HTTP client in `lib/stripe.ts`). And **the status code is Stripe's retry protocol**: anything but 2xx brings the event back for three days, so only a genuinely retryable failure — the database being unreachable — may return 500. A malformed event, an unpaid Session or an unhandled event type is acknowledged with 200 and a log line.
+
+  **The webhook must never read `products.price`.** `order_items.unit_price` comes from `reservations.unit_price`, frozen when the Stripe line was priced. A retry landing after the client edits a price in Supabase Studio would otherwise record an Order at a price nobody was charged. See `supabase/migrations/20260918130000_complete_checkout.sql`.
+
+- **`app/checkout/success/page.tsx`** — where Stripe returns the shopper (#19). A server component with no authorisation check in it *on purpose*: the Order is looked up by the session id from the query string, which anyone can paste, and `orders_select_own` is what decides whether a row comes back. It also never asks Stripe whether payment succeeded — landing on the URL is not proof of anything; the Order exists because the signed webhook created it. The shopper routinely arrives before the webhook does, so "no Order yet" renders a pending state that polls `router.refresh()`, never a 404. The Cart is cleared only once the Order is visible, so a `/checkout/success` link cannot empty a stranger's Cart.
 
 - **`lib/catalog-url.ts`** — what a catalog URL *means*, split out of `lib/catalog.ts` precisely so the drawer can import it. **Pure: it imports nothing at all** (#50) — the declared vocabulary arrives as an argument rather than being read from a module, so no future source of Terms can drag `next/headers` back in through the side door. `lib/catalog.ts` re-exports all of it, so server-side callers keep treating `@/lib/catalog` as the single door; client components must import from `@/lib/catalog-url` directly.
 

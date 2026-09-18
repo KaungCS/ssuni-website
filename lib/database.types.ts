@@ -186,6 +186,7 @@ export type Database = {
           quantity: number
           status: Database["public"]["Enums"]["reservation_status"]
           stripe_session_id: string
+          unit_price: number
           variant_id: string
         }
         Insert: {
@@ -195,6 +196,7 @@ export type Database = {
           quantity: number
           status?: Database["public"]["Enums"]["reservation_status"]
           stripe_session_id: string
+          unit_price: number
           variant_id: string
         }
         Update: {
@@ -204,6 +206,7 @@ export type Database = {
           quantity?: number
           status?: Database["public"]["Enums"]["reservation_status"]
           stripe_session_id?: string
+          unit_price?: number
           variant_id?: string
         }
         Relationships: [
@@ -304,6 +307,10 @@ export type Database = {
       }
     }
     Functions: {
+      complete_checkout: {
+        Args: { p_session_id: string; p_total: number; p_user_id: string }
+        Returns: string
+      }
       reserve_cart: {
         Args: { p_expires_at: string; p_items: Json; p_session_id: string }
         Returns: {

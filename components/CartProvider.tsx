@@ -81,6 +81,18 @@ function getServerSnapshot(): CartItem[] {
   return EMPTY;
 }
 
+/**
+ * Empty the Cart. Module-level rather than rebuilt per render, because
+ * /checkout/success calls it from an effect (#19) and a fresh identity every
+ * render would make that effect fire on every render.
+ *
+ * The only caller is a confirmed Order. Nothing else in the app is allowed to
+ * empty a shopper's Cart wholesale.
+ */
+function clearCart(): void {
+  write([]);
+}
+
 function write(next: CartItem[]): void {
   saveCart(window.localStorage, next);
   cachedRaw = JSON.stringify(next);
@@ -96,6 +108,8 @@ type CartContextValue = {
   add: (variantId: string, quantity?: number) => void;
   setItemQuantity: (variantId: string, quantity: number) => void;
   remove: (variantId: string) => void;
+  /** Empty the Cart. Only a confirmed Order does this (#19). */
+  clear: () => void;
 };
 
 const CartContext = createContext<CartContextValue | null>(null);
@@ -116,6 +130,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     setItemQuantity: (variantId, quantity) =>
       write(setQuantity(getSnapshot(), variantId, quantity)),
     remove: (variantId) => write(removeItem(getSnapshot(), variantId)),
+    clear: clearCart,
   };
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;

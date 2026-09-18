@@ -198,6 +198,81 @@ with attempt as (
 insert into results select 21, 'admin_can_mark_shipped',
   (select count(*) from attempt) = 1, true;
 
+-- 11. complete_checkout: the webhook's one transaction (#18, ADR 0010).
+--
+--     Here rather than in a vitest file because the property under test is
+--     idempotency across a retry, which is a unique index and a transaction
+--     boundary -- neither of which a mocked client can tell you anything about.
+--     Here rather than in rls.mjs because it needs a real auth.users id
+--     (orders.user_id is NOT NULL REFERENCES auth.users) and a rollback, and
+--     this file already has both.
+reset role;
+
+-- A Variant of its own with a stock count this suite sets, so the arithmetic
+-- below does not depend on what the client last typed into Supabase Studio.
+create temp table wh as
+  select id as variant_id from public.variants order by id limit 1;
+update public.variants set stock = 10 where id = (select variant_id from wh);
+
+-- What #15 would have left behind: one held Reservation per line, carrying the
+-- price the line was quoted to Stripe at.
+insert into public.reservations
+  (variant_id, quantity, unit_price, stripe_session_id, expires_at)
+select variant_id, 2, 19.99, 'cs_test_webhook', now() + interval '30 minutes' from wh;
+
+create temp table wh_first as
+  select public.complete_checkout(
+    'cs_test_webhook', (select id from subject), 39.98) as order_id;
+
+insert into results select 22, 'webhook_creates_the_order',
+  (select order_id from wh_first) is not null, true;
+
+-- unit_price = 19.99, not whatever products.price says today. This is the check
+-- that the price came from the Reservation rather than a live re-read.
+insert into results select 23, 'order_item_carries_the_price_it_was_held_at',
+  exists (
+    select 1 from public.order_items
+    where order_id = (select order_id from wh_first)
+      and variant_id = (select variant_id from wh)
+      and quantity = 2 and unit_price = 19.99
+  ), true;
+
+insert into results select 24, 'stock_falls_by_the_purchased_quantity',
+  (select stock from public.variants where id = (select variant_id from wh)) = 8, true;
+
+insert into results select 25, 'reservation_consumed',
+  (select status from public.reservations where stripe_session_id = 'cs_test_webhook')
+    = 'consumed', true;
+
+-- The retry. Stripe redelivers until it gets a 2xx, so this is the ordinary
+-- case rather than an edge one, and every assertion below must hold.
+create temp table wh_replay as
+  select public.complete_checkout(
+    'cs_test_webhook', (select id from subject), 39.98) as order_id;
+
+insert into results select 26, 'a_replayed_event_reports_nothing_to_do',
+  (select order_id from wh_replay) is null, true;
+
+insert into results select 27, 'a_replayed_event_creates_no_second_order',
+  (select count(*) from public.orders where stripe_session_id = 'cs_test_webhook') = 1, true;
+
+insert into results select 28, 'a_replayed_event_does_not_decrement_stock_twice',
+  (select stock from public.variants where id = (select variant_id from wh)) = 8, true;
+
+insert into results select 29, 'a_replayed_event_adds_no_second_order_item',
+  (select count(*) from public.order_items
+   where order_id = (select order_id from wh_first)) = 1, true;
+
+-- Checked as a grant rather than an attempted call: a refused EXECUTE aborts
+-- the transaction, taking every result above with it.
+insert into results select 30, 'complete_checkout_denied_to_authenticated',
+  not has_function_privilege(
+    'authenticated', 'public.complete_checkout(text, uuid, numeric)', 'execute'), true;
+
+insert into results select 31, 'complete_checkout_denied_to_anon',
+  not has_function_privilege(
+    'anon', 'public.complete_checkout(text, uuid, numeric)', 'execute'), true;
+
 reset role;
 
 select seq, check_name,

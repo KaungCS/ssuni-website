@@ -13,7 +13,7 @@ A specific purchasable combination of a Product's color and size, carrying its o
 _Avoid_: SKU, option
 
 **Reservation**:
-A temporary hold placed on a Variant's stock when a shopper begins checkout, so two shoppers cannot buy the same last unit. It expires if payment doesn't complete, and is consumed into an actual stock decrement when it does. Distinct from the decrement itself, which happens only on payment.
+A temporary hold placed on a Variant's stock when a shopper begins checkout, so two shoppers cannot buy the same last unit. It expires if payment doesn't complete, and is consumed into an actual stock decrement when it does. Distinct from the decrement itself, which happens only on payment. It also records the price its line was quoted to Stripe at, so the Order Item it becomes is priced as the shopper was charged rather than as the Product is priced when the webhook lands — which can be days later, on a retry.
 _Avoid_: lock, allocation, backorder
 
 **Available Stock**:
