@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SSUNI
 
-## Getting Started
-
-First, run the development server:
+Storefront for SSUNI, a clothing brand. Next.js 16 (App Router) + React 19 +
+Tailwind v4, Supabase for the catalog and auth, Stripe hosted Checkout for
+payment, deployed to Cloudflare Workers via the OpenNext adapter.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev      # http://localhost:3000
+npm test         # vitest
+npm run lint     # expect 6 warnings, 0 errors
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Local config lives in `.env.local` (never `.env`), which is gitignored. The
+Supabase URL and publishable key are required for anything to render; Stripe
+keys are set by `scripts/setup-stripe.sh`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Before you change anything
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+**Read [CLAUDE.md](CLAUDE.md) first.** It is the operating manual, not a
+formality — it documents the traps that have already cost real debugging time
+here: the npm 10 lockfile recipe, why `middleware.ts` must not be renamed to
+`proxy.ts`, why builds must not run while `npm run dev` is running, and which
+Cloudflare variable store each secret belongs in.
 
-## Learn More
+- [CONTEXT.md](CONTEXT.md) — the domain vocabulary (Product, Variant,
+  Reservation, Available Stock, Collection). Terms are capitalised in code
+  comments when they mean the domain concept.
+- [docs/adr/](docs/adr/) — the decisions and why the alternatives were rejected.
+- [docs/roadmap-september.md](docs/roadmap-september.md) — the plan of record,
+  including the cut order when the schedule slips. Prefer picking up an existing
+  GitHub issue over inventing new scope.
 
-To learn more about Next.js, take a look at the following resources:
+## Deployment
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Pushes to `main` build and deploy through Cloudflare Workers Builds. Branch
+builds use a different configuration and always fail at the deploy step — a red
+check on a PR branch is expected and is not evidence the branch is broken. See
+the Deployment section of CLAUDE.md before drawing conclusions from a build log.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Run `npm run cf:preview` before merging: it serves the app on the real workerd
+runtime, which is the only place some failures appear.
