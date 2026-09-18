@@ -32,7 +32,7 @@ describe("CartProvider hydration", () => {
 
     renderCart();
 
-    expect(screen.getByTestId("probe")).toHaveTextContent("hydrated:2");
+    expect(screen.getByTestId("probe").textContent).toBe("hydrated:2");
   });
 
   it("never writes an empty Cart over a stored one while mounting", () => {
