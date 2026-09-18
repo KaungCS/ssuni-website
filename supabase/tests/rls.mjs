@@ -136,19 +136,38 @@ check("anon INSERT on reservations denied", resvIns.status === 401 || resvIns.st
 // -- 4. Available Stock with no reservations ---------------------------------
 section("4. Available Stock (issue #3 done-when)");
 
-const avail = await anon("GET", "variants_available?select=color,size,stock,available_stock&order=color,size");
+const avail = await anon("GET", "variants_available?select=id,color,size,stock,available_stock&order=color,size");
 check("anon can select variants_available",
   avail.status === 200 && avail.json?.length === variantCount,
   `status ${avail.status}, ${avail.json?.length ?? 0} rows (expected ${variantCount})`);
-check("available_stock === stock when nothing is reserved",
-  avail.json?.every((v) => v.available_stock === v.stock),
-  JSON.stringify(avail.json));
+// Not "available_stock === stock". Reservations are real rows left by real
+// checkouts: a sandbox purchase holds stock for thirty minutes, and until #18
+// consumes it the row simply sits there. Asserting an empty reservations table
+// turns someone else's ordinary test purchase into a red suite -- the same
+// mistake as the exact catalog counts that failed on 2026-08-30.
+//
+// What holds at any moment is the view's own definition: stock minus what is
+// currently held. Read with the secret key, because anon must not see holds.
+const heldNow = (await svc("GET",
+  `reservations?select=variant_id,quantity&status=eq.held&expires_at=gt.${new Date().toISOString()}`)).json ?? [];
+const heldPer = {};
+for (const r of heldNow) heldPer[r.variant_id] = (heldPer[r.variant_id] ?? 0) + r.quantity;
+
+check("available_stock === stock minus what is actually held",
+  avail.json?.every((v) => v.available_stock === Math.max(0, v.stock - (heldPer[v.id] ?? 0))),
+  `${heldNow.length} live hold(s) ${JSON.stringify(heldPer)} against ${JSON.stringify(avail.json)}`);
 
 // -- 5. a live Reservation reduces Available Stock ---------------------------
 section("5. A held Reservation reduces Available Stock (ADR 0010)");
 
+// Every assertion below is relative to what the view reports right now rather
+// than to a literal: the client edits stock in Supabase Studio (#5), and this
+// Variant may already be carrying someone's live hold.
 const target = (await svc("GET", "variants?select=id,color,size,stock&color=eq.Espresso&size=eq.M")).json?.[0];
-check("found target variant Espresso/M with stock 12", target?.stock === 12, JSON.stringify(target));
+check("found a target Variant with room to hold 2", (target?.stock ?? 0) >= 2, JSON.stringify(target));
+
+const availBefore = (await anon("GET", `variants_available?select=available_stock&id=eq.${target.id}`))
+  .json?.[0]?.available_stock;
 
 const held = await svc("POST", "reservations", {
   body: {
@@ -163,8 +182,9 @@ check("service role can insert a Reservation", held.status === 201, `status ${he
 const heldId = held.json?.[0]?.id;
 
 const afterHold = (await anon("GET", `variants_available?select=stock,available_stock&id=eq.${target.id}`)).json?.[0];
-check("anon sees available_stock 10 while 2 are held",
-  afterHold?.stock === 12 && afterHold?.available_stock === 10, JSON.stringify(afterHold));
+check("anon sees Available Stock fall by the 2 held",
+  afterHold?.available_stock === availBefore - 2,
+  `before ${availBefore}, after ${JSON.stringify(afterHold)}`);
 
 // -- 6. expiry is computed, not scheduled ------------------------------------
 section("6. Expiry is computed, not scheduled (ADR 0010)");
@@ -174,10 +194,13 @@ await svc("PATCH", `reservations?id=eq.${heldId}`, {
 });
 const afterExpiry = (await anon("GET", `variants_available?select=available_stock&id=eq.${target.id}`)).json?.[0];
 check("a lapsed Reservation stops holding stock without being released",
-  afterExpiry?.available_stock === 12, JSON.stringify(afterExpiry));
+  afterExpiry?.available_stock === availBefore,
+  `before ${availBefore}, after ${JSON.stringify(afterExpiry)}`);
 
 await svc("DELETE", `reservations?id=eq.${heldId}`);
-const cleaned = (await svc("GET", "reservations?select=id")).json;
+// Scoped to this suite's own probe, not to the whole table: a global "no
+// Reservations exist" assertion is false the moment anybody checks out.
+const cleaned = (await svc("GET", "reservations?select=id&stripe_session_id=eq.cs_test_verification_probe")).json;
 check("test Reservation cleaned up", cleaned?.length === 0, `${cleaned?.length ?? "?"} rows remain`);
 
 // -- 7. Hidden hides the Product, its Variants, and its taxonomy terms -------
@@ -298,7 +321,11 @@ const inThirtyMinutes = () => new Date(Date.now() + 30 * 60_000).toISOString();
 // `order=id` rather than a bare limit=1: an unordered limit lets Postgres return
 // a different Variant between runs, which would make a failure here depend on
 // which row it happened to pick.
-const testVariant = (await svc("GET", "variants?select=id,stock&order=id&limit=1")).json?.[0];
+// The first Variant carrying no live hold. Taking `limit=1` blindly lands on
+// whatever id sorts first, which may be the one a real checkout is holding --
+// and then every arithmetic assertion below is off by that hold.
+const testVariant = (await svc("GET", "variants?select=id,stock&order=id")).json
+  ?.find((v) => !(v.id in heldPer));
 if (!testVariant) throw new Error("no variants in the database to test reserve_cart against");
 
 const clearHolds = () => svc("DELETE", "reservations?stripe_session_id=like.cs_test_rc_*");
@@ -373,8 +400,51 @@ try {
 const stockRestored = (await svc("GET", `variants?select=stock&id=eq.${testVariant.id}`)).json?.[0];
 check("test stock restored", stockRestored?.stock === testVariant.stock, JSON.stringify(stockRestored));
 
-const holdsLeft = (await svc("GET", "reservations?select=id")).json ?? [];
+const holdsLeft = (await svc("GET", "reservations?select=id&stripe_session_id=like.cs_test_rc_*")).json ?? [];
 check("no test Reservation left behind", holdsLeft.length === 0, `${holdsLeft.length} rows remain`);
+
+// -- 10. Orders are never anonymous ------------------------------------------
+section("10. Orders and Order Items are invisible to anon (#17)");
+
+// An Order is never public. Both policies are `to authenticated`, and anon has
+// no grant at all -- so this must be denied outright rather than returning an
+// empty list. The distinction matters: an empty 200 is also what a *broken*
+// policy returns while the table is still empty, and it would look fine here.
+const ordersAnon = await anon("GET", "orders?select=*");
+check("anon SELECT on orders denied (not just empty)",
+  ordersAnon.status === 401 || ordersAnon.status === 403,
+  `status ${ordersAnon.status} ${ordersAnon.json?.code ?? ""} ${ordersAnon.json?.message ?? ""}`);
+
+const itemsAnon = await anon("GET", "order_items?select=*");
+check("anon SELECT on order_items denied (not just empty)",
+  itemsAnon.status === 401 || itemsAnon.status === 403,
+  `status ${itemsAnon.status} ${itemsAnon.json?.code ?? ""}`);
+
+// Orders come from the webhook or they do not exist (#18). Nobody holding a
+// browser key may fabricate one -- that would be a Paid Order nobody paid for.
+const orderIns = await anon("POST", "orders", {
+  body: { user_id: "00000000-0000-4000-8000-000000000000", stripe_session_id: "cs_test_rls_probe", total: 1 },
+});
+check("anon INSERT on orders denied", orderIns.status === 401 || orderIns.status === 403,
+  `status ${orderIns.status} ${orderIns.json?.code ?? ""}`);
+
+// The #17 done-when: no anon-key write to status succeeds. Fulfilment state is
+// the shop's word, not the shopper's -- "Delivered" set from a browser is a
+// customer signing for their own parcel.
+const statusUpd = await anon("PATCH", "orders?status=eq.Paid", {
+  body: { status: "Delivered" },
+  prefer: "return=representation",
+});
+check("anon UPDATE of order status denied",
+  statusUpd.status === 401 || statusUpd.status === 403,
+  `status ${statusUpd.status} ${statusUpd.json?.code ?? ""}`);
+
+// The webhook's key must still reach the table, or #18 has nowhere to write.
+// Also the only check here that fails loudly if the migration never ran: every
+// denial above would pass just as happily against a table that does not exist.
+const ordersSvc = await svc("GET", "orders?select=id&limit=1");
+check("the secret key can read orders (what #18 writes with)",
+  ordersSvc.status === 200, `status ${ordersSvc.status} ${ordersSvc.json?.message ?? ""}`);
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
