@@ -8,6 +8,7 @@ import {
 } from "@/lib/cart";
 import { getVariantsByIds } from "@/lib/catalog";
 import { CHECKOUT_TTL_SECONDS, getStripe } from "@/lib/stripe";
+import { createClient as createUserClient } from "@/lib/supabase/server";
 
 /**
  * Turn a Cart into a Stripe-hosted Checkout Session, and hold the stock behind
@@ -33,6 +34,29 @@ export async function POST(request: Request) {
     return NextResponse.json(
       { error: "Expected { items: [{ variantId, quantity }] }." },
       { status: 400 },
+    );
+  }
+
+  // The login gate (#16, ADR 0001). Browsing and the Cart stay anonymous; the
+  // first thing that requires an account is paying, and this is that moment.
+  //
+  // getUser() rather than getSession(): it verifies the token with Supabase
+  // instead of trusting what the cookie claims. The Cart page's signed-out
+  // banner reads the session locally because it is a hint; this is the gate,
+  // and the id it produces becomes orders.user_id (#17), so it has to be real.
+  //
+  // Placed before the Supabase read and the Stripe call so a signed-out shopper
+  // costs neither -- and, more importantly, so no Reservation is ever held for
+  // a Session that has nobody to attribute the Order to.
+  const supabase = await createUserClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json(
+      { error: "Please sign in to check out." },
+      { status: 401 },
     );
   }
 
@@ -81,6 +105,14 @@ export async function POST(request: Request) {
       mode: "payment",
       line_items: toStripeLineItems(items, variants),
       expires_at: Math.floor(Date.now() / 1000) + CHECKOUT_TTL_SECONDS,
+      // Who this Order belongs to. client_reference_id is Stripe's own field
+      // for the merchant's id of the customer, and it comes back on
+      // checkout.session.completed -- so #18 fills orders.user_id from the
+      // event itself, with no lookup table and nothing to keep in sync.
+      client_reference_id: user.id,
+      // Prefills Stripe's email field and addresses the receipt. Not identity:
+      // client_reference_id above is what the Order is attributed to.
+      customer_email: user.email,
       success_url: `${origin}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${origin}/cart`,
     });
