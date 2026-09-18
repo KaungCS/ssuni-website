@@ -135,7 +135,16 @@ export async function POST(request: Request) {
   const { data: shortfalls, error } = await admin.rpc("reserve_cart", {
     p_session_id: session.id,
     p_expires_at: new Date(session.expires_at * 1000).toISOString(),
-    p_items: items.map((i) => ({ variant_id: i.variantId, quantity: i.quantity })),
+    // unit_price rides along so the Reservation records what Stripe was told
+    // this line costs (#18). The webhook copies it to order_items rather than
+    // re-reading products.price, which can have moved by the time a retried
+    // delivery lands. Same `variants` map that built the Stripe line above, so
+    // the two cannot disagree.
+    p_items: items.map((i) => ({
+      variant_id: i.variantId,
+      quantity: i.quantity,
+      unit_price: variants[i.variantId].price,
+    })),
   });
 
   if (error || (shortfalls ?? []).length > 0) {
