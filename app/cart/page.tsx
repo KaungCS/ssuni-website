@@ -2,8 +2,10 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCart } from "@/components/CartProvider";
 import { reconcile, type ReconciledItem, type VariantAvailability } from "@/lib/cart";
+import { createClient } from "@/lib/supabase/client";
 import type { ResolvedVariant } from "@/lib/catalog";
 
 /**
@@ -26,6 +28,9 @@ import type { ResolvedVariant } from "@/lib/catalog";
 type ResolveState =
   | { key: string; status: "error" }
   | { key: string; status: "ready"; variants: Record<string, ResolvedVariant> };
+
+/** Sign in, then come straight back to the Cart it was pressed from (#16). */
+const LOGIN_HREF = `/login?next=${encodeURIComponent("/cart")}`;
 
 function money(amount: number): string {
   return `$${amount.toFixed(2)}`;
@@ -59,6 +64,7 @@ async function resolveCart(key: string): Promise<ResolveState> {
 }
 
 export default function CartPage() {
+  const router = useRouter();
   const { items, hydrated, setItemQuantity, remove } = useCart();
   const [resolved, setResolved] = useState<ResolveState | null>(null);
   // The Variant whose last quantity edit was clamped, so the snap-back can be
@@ -69,6 +75,19 @@ export default function CartPage() {
   // page the way the resolve error state does.
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
+  // null while unknown. Purely so the shopper can see the login step coming
+  // (#16) instead of meeting it after a click -- POST /api/checkout verifies
+  // the user server-side and 401s regardless of what this says.
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    // getSession reads the stored token without a network round trip. That is
+    // the right trade for a label: it is never the authority, and a token that
+    // expired between this read and the click is caught by the 401 below.
+    void createClient()
+      .auth.getSession()
+      .then(({ data }) => setSignedIn(data.session !== null));
+  }, []);
 
   /**
    * Hand the Cart to POST /api/checkout and follow the Session it returns.
@@ -88,6 +107,13 @@ export default function CartPage() {
       });
       const data = await res.json();
 
+      if (res.status === 401) {
+        // Signed out, or signed out since the page loaded. `next` brings them
+        // back here with the Cart intact -- it lives in localStorage, so the
+        // round trip through /login cannot cost them anything.
+        router.push(LOGIN_HREF);
+        return;
+      }
       if (!res.ok) {
         setCheckoutError(data.error ?? "Checkout is unavailable right now.");
         setCheckingOut(false);
@@ -221,15 +247,29 @@ export default function CartPage() {
         <p className="text-xs font-belleza text-ssuni-slate">
           Shipping and taxes are calculated at checkout.
         </p>
+        {signedIn === false && (
+          <p className="font-belleza text-sm text-ssuni-slate">
+            An account is needed to place an order. Your Cart comes with you.
+          </p>
+        )}
         {/* The button starts the Session; the hold behind it is what actually
             decides whether the stock can be sold (ADR 0010). Everything above
-            is UX, not a correctness gate. */}
+            is UX, not a correctness gate -- including the signed-out label: it
+            only saves a round trip, since the route 401s either way. */}
         <button
-          onClick={startCheckout}
+          onClick={
+            signedIn === false
+              ? () => router.push(LOGIN_HREF)
+              : startCheckout
+          }
           disabled={checkingOut || items.length === 0}
           className="border border-ssuni-brown px-10 py-4 text-xs uppercase tracking-widest font-belleza transition-colors hover:bg-ssuni-brown hover:text-ssuni-light1 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ssuni-brown cursor-pointer"
         >
-          {checkingOut ? "Taking you to checkout…" : "Checkout"}
+          {checkingOut
+            ? "Taking you to checkout…"
+            : signedIn === false
+              ? "Sign in to check out"
+              : "Checkout"}
         </button>
         {checkoutError && (
           <p className="font-belleza text-sm text-ssuni-brown">{checkoutError}</p>

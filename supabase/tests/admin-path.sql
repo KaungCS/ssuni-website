@@ -101,6 +101,105 @@ insert into results select 9, 'reservations_denied_to_authenticated',
 insert into results select 10, 'reservations_denied_to_anon',
   not has_table_privilege('anon', 'public.reservations', 'select'), true;
 
+-- 7. Orders: a customer reads their own and nobody else's (#17).
+--
+--    The subject is an admin by this point, and orders_admin_all would satisfy
+--    every read below on its own -- masking a broken orders_select_own with a
+--    row of green. So drop the allowlist entry first and check the customer
+--    path as a plain customer. (Still inside the transaction; still rolled
+--    back.) The admin checks re-add it at the end.
+reset role;
+delete from public.admins where user_id = (select id from subject);
+
+insert into public.orders (user_id, stripe_session_id, total)
+select id, 'cs_test_admin_path', 65.00 from subject;
+
+insert into public.order_items (order_id, variant_id, quantity, unit_price)
+select o.id, v.id, 1, 65.00
+from public.orders o
+cross join (select id from public.variants order by id limit 1) v
+where o.stripe_session_id = 'cs_test_admin_path';
+
+select pg_temp.become_subject();
+set local role authenticated;
+
+insert into results select 11, 'customer_sees_own_order',
+  exists (select 1 from public.orders where stripe_session_id = 'cs_test_admin_path'), true;
+
+-- order_items has no user_id of its own; it inherits visibility through the
+-- exists() on orders. This is the check that the inheritance actually works.
+insert into results select 12, 'customer_sees_own_order_items',
+  exists (
+    select 1 from public.order_items oi
+    join public.orders o on o.id = oi.order_id
+    where o.stripe_session_id = 'cs_test_admin_path'
+  ), true;
+
+-- The #17 done-when, from the direction that matters most: the customer who
+-- owns the Order still cannot tell the shop it has shipped.
+with attempt as (
+  update public.orders set status = 'Shipped'
+  where stripe_session_id = 'cs_test_admin_path'
+  returning 1
+)
+insert into results select 13, 'owner_cannot_update_own_order_status',
+  (select count(*) from attempt) = 0, true;
+
+-- 8. Another customer sees nothing. Impersonating a uuid with no auth.users row
+--    is deliberate: RLS evaluates auth.uid() either way, and it means this
+--    check needs no second real account to exist in the project.
+reset role;
+select set_config(
+  'request.jwt.claims',
+  json_build_object('sub', '00000000-0000-4000-8000-000000000000', 'role', 'authenticated')::text,
+  true
+);
+set local role authenticated;
+
+insert into results select 14, 'other_customer_cannot_see_order',
+  not exists (select 1 from public.orders where stripe_session_id = 'cs_test_admin_path'), true;
+
+insert into results select 15, 'other_customer_cannot_see_order_items',
+  not exists (
+    select 1 from public.order_items oi
+    join public.orders o on o.id = oi.order_id
+    where o.stripe_session_id = 'cs_test_admin_path'
+  ), true;
+
+-- 9. Orders are created by the webhook (#18) and by nothing else. Checked as
+--    grants rather than attempted writes, because a missing grant is refused
+--    before any policy runs -- and an INSERT here would abort the transaction
+--    rather than record a FAIL.
+reset role;
+insert into results select 16, 'orders_insert_denied_to_authenticated',
+  not has_table_privilege('authenticated', 'public.orders', 'insert'), true;
+insert into results select 17, 'orders_delete_denied_to_authenticated',
+  not has_table_privilege('authenticated', 'public.orders', 'delete'), true;
+insert into results select 18, 'orders_denied_to_anon',
+  not has_table_privilege('anon', 'public.orders', 'select'), true;
+insert into results select 19, 'order_items_denied_to_anon',
+  not has_table_privilege('anon', 'public.order_items', 'select'), true;
+
+-- 10. The admin's fulfilment path (#21): see every Order, and be the only
+--     browser client that can move one to Shipped.
+insert into public.admins (user_id) select id from subject;
+
+select pg_temp.become_subject();
+set local role authenticated;
+
+insert into results select 20, 'admin_sees_order',
+  exists (select 1 from public.orders where stripe_session_id = 'cs_test_admin_path'), true;
+
+with attempt as (
+  update public.orders set status = 'Shipped', tracking_link = 'https://example.com/track/1'
+  where stripe_session_id = 'cs_test_admin_path'
+  returning 1
+)
+insert into results select 21, 'admin_can_mark_shipped',
+  (select count(*) from attempt) = 1, true;
+
+reset role;
+
 select seq, check_name,
        case when result = expected then 'PASS' else 'FAIL' end as outcome,
        result, expected

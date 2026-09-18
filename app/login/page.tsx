@@ -2,9 +2,29 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { createClient } from "../../lib/supabase/client"; // Use relative import to avoid path alias issues
 
+/**
+ * Where to send the shopper after a successful sign-in (#16).
+ *
+ * Read from `window.location` rather than useSearchParams(): this page has no
+ * server data, so the hook would force it behind a Suspense boundary to keep
+ * prerendering, for a value only ever needed inside a click handler.
+ *
+ * The prefix check is an open-redirect guard, not tidiness. `?next=` arrives
+ * from whoever wrote the link, and without it "//evil.example" is a
+ * protocol-relative URL that the browser happily treats as another origin --
+ * so a link to our own login page could bounce a shopper off-site mid-checkout.
+ * Only a same-origin path is accepted; anything else falls back to the catalog.
+ */
+function nextDestination(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next && next.startsWith("/") && !next.startsWith("//") ? next : "/catalog";
+}
+
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [isSubmitted, setIsSubmitted] = useState(false);
@@ -47,8 +67,14 @@ export default function LoginPage() {
     if (error) {
       alert("Invalid code. Please try again.");
     } else if (data.session) {
-      alert("Success! You are now logged in.");
-      // We will add routing here later to send them to the catalog or admin page
+      // replace, not push: the login page is a step on the way somewhere, and
+      // Back from the destination should not land on a spent OTP form.
+      //
+      // refresh() first, so Server Components re-render with the session the
+      // verify just wrote. Without it the destination can render from the
+      // client-side cache as though nobody signed in.
+      router.refresh();
+      router.replace(nextDestination());
     }
   };
 
