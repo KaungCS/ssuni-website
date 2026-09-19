@@ -3,6 +3,7 @@ import {
   addItem,
   CART_STORAGE_KEY,
   itemCount,
+  lineTotal,
   loadCart,
   MAX_CART_ITEMS,
   parseCheckoutRequest,
@@ -365,5 +366,21 @@ describe("toStripeLineItems", () => {
     const lines = toStripeLineItems(items, { [vid]: variant });
     const stripeTotal = lines.reduce((n, l) => n + l.price_data.unit_amount * l.quantity, 0);
     expect(stripeTotal).toBe(Math.round(reconcile(items, { [vid]: variant }).subtotal * 100));
+  });
+});
+
+describe("lineTotal", () => {
+  it("multiplies in integer cents, like the subtotal", () => {
+    // 19.99 * 3 is 59.97000000000001 in binary floating point. The receipt and
+    // the Order history both render this number.
+    expect(lineTotal(19.99, 3)).toBe(59.97);
+    expect(lineTotal(0.1, 3)).toBe(0.3);
+  });
+
+  it("agrees with the subtotal for a single-line Cart", () => {
+    const availability = { v1: { price: 19.99, availableStock: 10 } };
+    expect(reconcile([{ variantId: "v1", quantity: 3 }], availability).subtotal).toBe(
+      lineTotal(19.99, 3),
+    );
   });
 });

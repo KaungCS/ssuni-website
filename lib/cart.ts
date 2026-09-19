@@ -88,6 +88,31 @@ function toCents(dollars: number): number {
 }
 
 /**
+ * One line's total: a unit price times a quantity, through the same integer
+ * cents as the subtotal above.
+ *
+ * Here rather than inline in JSX because an Order's receipt and its entry in
+ * the Order history are two files, and `unitPrice * quantity` written out twice
+ * is two places for the rule to drift -- the same reason the subtotal is
+ * computed once. /checkout/success and /profile/orders/[id] both call this.
+ */
+export function lineTotal(unitPrice: number, quantity: number): number {
+  return (toCents(unitPrice) * quantity) / 100;
+}
+
+/**
+ * Decimal dollars as the storefront prints them. The one money formatter.
+ *
+ * Lives in this module because it is the only money module both halves of the
+ * app can reach: lib/orders.ts touches `next/headers` and so cannot be imported
+ * by the client `/cart`, which is how two identical copies of this came to
+ * exist. lib/orders.ts re-exports it, so Order pages still have one door.
+ */
+export function money(amount: number): string {
+  return `$${amount.toFixed(2)}`;
+}
+
+/**
  * Price a Cart against live availability.
  *
  * The subtotal is computed here and nowhere else (ADR 0001, amended

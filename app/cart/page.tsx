@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/components/CartProvider";
-import { reconcile, type ReconciledItem, type VariantAvailability } from "@/lib/cart";
+import { money, reconcile, type ReconciledItem, type VariantAvailability } from "@/lib/cart";
 import { createClient } from "@/lib/supabase/client";
 import type { ResolvedVariant } from "@/lib/catalog";
 
@@ -31,10 +31,6 @@ type ResolveState =
 
 /** Sign in, then come straight back to the Cart it was pressed from (#16). */
 const LOGIN_HREF = `/login?next=${encodeURIComponent("/cart")}`;
-
-function money(amount: number): string {
-  return `$${amount.toFixed(2)}`;
-}
 
 /**
  * Ask the server what the Cart's Variants cost and how many are left.

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   parseCheckoutRequest,
   reconcile,
@@ -7,7 +7,7 @@ import {
   type CheckoutVariant,
 } from "@/lib/cart";
 import { getVariantsByIds } from "@/lib/catalog";
-import { CHECKOUT_TTL_SECONDS, getStripe } from "@/lib/stripe";
+import { CHECKOUT_TTL_SECONDS, RESERVATION_GRACE_SECONDS, getStripe } from "@/lib/stripe";
 import { createClient as createUserClient } from "@/lib/supabase/server";
 
 /**
@@ -124,17 +124,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not reach Stripe." }, { status: 502 });
   }
 
-  // The hold bypasses RLS, so it uses the secret key -- the only place besides
-  // the webhook (#18) where that is true.
-  const admin = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SECRET_KEY!,
-    { auth: { persistSession: false } },
-  );
+  // The hold bypasses RLS, so it uses the secret key. lib/supabase/admin.ts
+  // documents why, and its importers are the list of everything in this
+  // codebase that steps around ADR 0004's only security boundary.
+  const admin = createAdminClient();
 
   const { data: shortfalls, error } = await admin.rpc("reserve_cart", {
     p_session_id: session.id,
-    p_expires_at: new Date(session.expires_at * 1000).toISOString(),
+    // Outlives the Session on purpose -- see RESERVATION_GRACE_SECONDS and ADR
+    // 0010. A payment landing in the last seconds of the window is confirmed by
+    // a webhook that arrives after it, and the hold has to still be standing.
+    p_expires_at: new Date(
+      (session.expires_at + RESERVATION_GRACE_SECONDS) * 1000,
+    ).toISOString(),
     // unit_price rides along so the Reservation records what Stripe was told
     // this line costs (#18). The webhook copies it to order_items rather than
     // re-reading products.price, which can have moved by the time a retried
@@ -149,7 +151,7 @@ export async function POST(request: Request) {
 
   if (error || (shortfalls ?? []).length > 0) {
     // Nobody has the URL, so expiring is tidiness rather than a race to win.
-    // If it fails, the Session lapses on its own in 30 minutes.
+    // If it fails, the Session lapses on its own at expires_at.
     await stripe.checkout.sessions.expire(session.id).catch(() => {});
 
     if (error) {

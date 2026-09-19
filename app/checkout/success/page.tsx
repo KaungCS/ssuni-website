@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AwaitingOrder, ClearCart } from "@/components/CheckoutSuccess";
-import { getOrderBySession, money, orderDate, orderReference } from "@/lib/orders";
+import { getOrderBySession, lineTotal, money, orderDate, orderReference } from "@/lib/orders";
 
 /**
  * Where Stripe returns the shopper after payment (#19). The URL is
@@ -98,7 +98,7 @@ export default async function CheckoutSuccessPage({
               <span className="text-ssuni-slate"> × {line.quantity}</span>
             </span>
             <span className="text-ssuni-brown whitespace-nowrap">
-              {money(line.unitPrice * line.quantity)}
+              {money(lineTotal(line.unitPrice, line.quantity))}
             </span>
           </li>
         ))}

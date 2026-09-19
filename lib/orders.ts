@@ -175,9 +175,12 @@ export async function getOrderBySession(
 // Display helpers. Pure, and shared so three pages format one Order the same.
 // ---------------------------------------------------------------------------
 
-export function money(amount: number): string {
-  return `$${amount.toFixed(2)}`;
-}
+/**
+ * Money formatting and line arithmetic come from lib/cart.ts and are re-exported
+ * here, so an Order page keeps a single import while `$` and `unitPrice *
+ * quantity` still have exactly one implementation each in the codebase.
+ */
+export { lineTotal, money } from "./cart";
 
 /**
  * The uuid in full is unusable over the phone or in an email. The first block

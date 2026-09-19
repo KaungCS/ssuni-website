@@ -22,13 +22,39 @@ export function getStripe(): Stripe {
 
 /**
  * How long a Checkout Session -- and therefore the Reservation behind it --
- * stays alive. Stripe's documented minimum.
+ * stays alive.
  *
  * Stripe defaults to 24 hours. Because the Reservation inherits this, the
  * default would put a day-long hold on the last unit every time someone opened
  * checkout and wandered off.
+ *
+ * Stripe's documented minimum is 30 minutes *after Session creation*, and it
+ * measures that from when the request reaches Stripe, not from the Date.now()
+ * that built it. Sitting exactly on the floor spends the whole margin on the
+ * network hop -- and on workerd, Date.now() reports the last I/O rather than
+ * the current instant, so the value can already be stale before it is sent. A
+ * minute of slack costs a shopper nothing and removes the boundary.
  */
-export const CHECKOUT_TTL_SECONDS = 30 * 60;
+export const CHECKOUT_TTL_SECONDS = 31 * 60;
+
+/**
+ * How much longer the Reservation lives than the Session it was taken for.
+ *
+ * The two timestamps deliberately differ, and the next reader will want to
+ * "fix" that -- see ADR 0010. A shopper who pays a few seconds before the
+ * Session's expiry is accepted by Stripe, but the webhook confirming it arrives
+ * afterwards. If the hold lapsed at the same instant, that gap is a window
+ * where the stock is unheld -- `private.variant_available_stock` counts only
+ * Reservations with `expires_at > now()` -- and another shopper can buy the
+ * unit that was just sold. `complete_checkout` then floors the count at zero
+ * and the shop is oversold.
+ *
+ * It costs nothing to close. A cancelled checkout's hold expires on its own
+ * either way, and `checkout.session.expired` (#30) sets the Reservation to
+ * `released`, which frees the stock immediately regardless of this grace --
+ * the availability function filters on `status = 'held'` as well.
+ */
+export const RESERVATION_GRACE_SECONDS = 5 * 60;
 
 // ---------------------------------------------------------------------------
 // Webhook (#18)
