@@ -52,8 +52,11 @@ Per [ADR 0001](adr/0001-guest-local-cart.md) and [ADR 0008](adr/0008-stripe-host
 
 ## Week 5 — Sep 21–27: Orders admin, Hero Slots, legal
 
-- **Orders-only admin** at `/admin/orders`, gated on the admin allowlist: list Orders, mark `Shipped`, enter a Tracking Link. The minimum needed to actually fulfill a sale.
-- **Hero Slots** ([ADR 0003](adr/0003-hero-story-slots.md)) — a `hero_stories` table with Slot assignment; the landing page renders one primary banner plus secondary tiles from the database instead of the single hardcoded `components/HeroStory.tsx`. Fixed and manually curated, no auto-rotation.
+> **Amended 2026-09-19 — this week was pulled forward and its scope grew.** Weeks 1–4 finished early, so weeks 5–6 started during week 4. Hero Stories shipped early; the Orders-only admin became the full Admin Dashboard. The plan of record for what remains is [docs/superpowers/plans/2026-09-19-weeks-5-6-early.md](superpowers/plans/2026-09-19-weeks-5-6-early.md). The bullets below are kept as written, annotated.
+
+- ~~**Orders-only admin**~~ → **the full Admin Dashboard.** Orders (list, mark `Shipped`, enter a Tracking Link) plus Products, Variants, Hero Stories and image upload, all gated on the admin allowlist. [ADR 0007](adr/0007-admin-dashboard-deferred.md) was amended on 2026-09-19 to lift the deferral: the write policies and grants for every one of those tables already existed and had never been consumed, so the cost was forms, not schema.
+- ~~**Hero Slots**~~ → **done, and Slots no longer exist.** [ADR 0003](adr/0003-hero-story-slots.md) was amended on 2026-09-18 to replace fixed Slots with an unbounded ordered list, so `hero_stories` carries `sort_order` and `is_hidden` and no `slot` column. The landing page stacks every visible Story. Shipped in `c5016c5` (#22), a week early. Still fixed and manually curated, still no auto-rotation.
+- **Product images** ([ADR 0009](adr/0009-product-images-in-supabase-storage.md), amended 2026-09-19) — slipped from week 2 and lands here instead, as an ordered `product_images` gallery rather than the single `image_url` the ADR originally described.
 - **Legal pages** ([ADR 0006](adr/0006-legal-pages-timing-and-source.md)) — generate Privacy Policy, Terms, and Shipping & Returns from Termly or TermsFeed; add as static `/privacy`, `/terms`, `/shipping-returns`, deliberately not Admin-editable. The ADR defers generation to exactly this point so the policy describes the finished Supabase and Stripe data practices.
 
 ## Week 6 — Sep 28–30: launch
@@ -74,6 +77,8 @@ Decided now, while it is a calm decision. If the schedule slips, drop in this or
 2. Orders admin — client fulfills from Supabase Studio too
 3. Catalog filtering — point every nav link at bare `/catalog`
 4. Profile Order history — Stripe's own email receipts carry the customer
+
+**Status 2026-09-19: nothing on this list was cut.** All four shipped — 3 in `#10`/`#37`, 4 in `#20`, 1 in `#22`, and 2 is in progress as the full Admin Dashboard rather than the reduced version. The list stays as written because it is a record of a decision made while calm, and because the schedule can still slip: if it does, the client-owned track below is what will have caused it, and none of these four cuts would buy back a single day against it.
 
 **Never cut:** RLS policies, legal pages, webhook correctness and idempotency, the live-mode smoke test.
 
