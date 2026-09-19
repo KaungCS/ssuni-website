@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createAdminClient } from "@/lib/supabase/admin";
 import Stripe from "stripe";
 import { getStripe, parseCompletedSession } from "@/lib/stripe";
 
@@ -77,15 +77,12 @@ export async function POST(request: Request) {
     return new Response(`Ignored ${event.type}.`, { status: 200 });
   }
 
-  // The secret key, which bypasses RLS -- the only place besides the hold in
-  // #15 where that is true, and both branches below need it. orders and
-  // order_items grant INSERT to nobody (#17) and reservations has RLS on with
-  // deliberately no policies, so there is no browser-key path to either write.
-  const admin = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SECRET_KEY!,
-    { auth: { persistSession: false } },
-  );
+  // The secret key, which bypasses RLS -- both branches below need it. orders
+  // and order_items grant INSERT to nobody (#17) and reservations has RLS on
+  // with deliberately no policies, so there is no browser-key path to either
+  // write, and a Stripe delivery has no user session to run as regardless.
+  // lib/supabase/admin.ts holds the full list of callers that do this.
+  const admin = createAdminClient();
 
   // -------------------------------------------------------------------------
   // The Session lapsed unpaid (#30)
