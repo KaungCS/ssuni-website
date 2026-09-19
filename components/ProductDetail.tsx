@@ -1,9 +1,17 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import type { CatalogProduct } from "@/lib/catalog";
 import { useCart } from "./CartProvider";
+
+/**
+ * Shown when a Product has no images at all. Not a defensive nicety: the
+ * catalog is still placeholder data (#5), and a Product the client creates in
+ * the Admin Dashboard exists before its photography does.
+ */
+const PLACEHOLDER_IMAGE = "/images/download.jpeg";
 
 // A quick helper to map color names to hex codes/Tailwind classes for the swatches
 const getColorSwatch = (colorName: string) => {
@@ -34,7 +42,14 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
   const [selectedColor, setSelectedColor] = useState<string | null>(null);
   const [selectedSize, setSelectedSize] = useState<string | null>(null);
   const [addedVariantId, setAddedVariantId] = useState<string | null>(null);
+  // Which gallery image is showing. Independent of the colour selection below:
+  // ProductImage.color exists but is deliberately unwired (ADR 0009, amended).
+  const [imageIndex, setImageIndex] = useState(0);
   const { add, items } = useCart();
+
+  // Indexed rather than stored so an out-of-range index can never render a
+  // blank panel -- `images` comes from the server and can be empty.
+  const shownImage = product.images[imageIndex]?.url ?? PLACEHOLDER_IMAGE;
 
   const availableColors = useMemo(() => {
     const colors = product.variants.map((v) => v.color);
@@ -62,10 +77,14 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
         {/* Left Column: Product Image Gallery */}
         <div className="flex flex-col gap-4">
           <div className="w-full aspect-[3/4] bg-ssuni-light2 relative overflow-hidden">
-            <img
-              src={product.imageUrl ?? "/images/download.jpeg"}
+            <Image
+              src={shownImage}
               alt={product.name}
-              className="w-full h-full object-cover"
+              fill
+              // Half the grid from md up, full width below it.
+              sizes="(min-width: 768px) 50vw, 100vw"
+              priority
+              className="object-cover"
             />
             {/* Added a Sage accent tag for 'New' items */}
             {product.isNew && (
@@ -74,6 +93,35 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
               </span>
             )}
           </div>
+
+          {/* One image needs no picker, and no image needs no strip either. */}
+          {product.images.length > 1 && (
+            <ul className="flex gap-3 overflow-x-auto pb-1">
+              {product.images.map((image, i) => (
+                <li key={`${image.url}-${i}`} className="shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setImageIndex(i)}
+                    aria-label={`Show image ${i + 1} of ${product.images.length}`}
+                    aria-current={i === imageIndex}
+                    className={`relative block w-20 aspect-[3/4] overflow-hidden bg-ssuni-light2 cursor-pointer transition-opacity ${
+                      i === imageIndex
+                        ? "ring-2 ring-ssuni-brown ring-offset-2 ring-offset-ssuni-light1"
+                        : "opacity-70 hover:opacity-100"
+                    }`}
+                  >
+                    <Image
+                      src={image.url}
+                      alt=""
+                      fill
+                      sizes="80px"
+                      className="object-cover"
+                    />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         {/* Right Column: Product Details & Form */}

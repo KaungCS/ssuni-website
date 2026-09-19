@@ -172,6 +172,41 @@ export type Database = {
         }
         Relationships: []
       }
+      product_images: {
+        Row: {
+          color: string | null
+          created_at: string
+          id: string
+          product_id: string
+          sort_order: number
+          url: string
+        }
+        Insert: {
+          color?: string | null
+          created_at?: string
+          id?: string
+          product_id: string
+          sort_order?: number
+          url: string
+        }
+        Update: {
+          color?: string | null
+          created_at?: string
+          id?: string
+          product_id?: string
+          sort_order?: number
+          url?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "product_images_product_id_fkey"
+            columns: ["product_id"]
+            isOneToOne: false
+            referencedRelation: "products"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       products: {
         Row: {
           category: string | null
@@ -180,7 +215,6 @@ export type Database = {
           department: string | null
           description: string | null
           id: string
-          image_url: string | null
           is_hidden: boolean
           is_new: boolean
           name: string
@@ -194,7 +228,6 @@ export type Database = {
           department?: string | null
           description?: string | null
           id?: string
-          image_url?: string | null
           is_hidden?: boolean
           is_new?: boolean
           name: string
@@ -208,7 +241,6 @@ export type Database = {
           department?: string | null
           description?: string | null
           id?: string
-          image_url?: string | null
           is_hidden?: boolean
           is_new?: boolean
           name?: string

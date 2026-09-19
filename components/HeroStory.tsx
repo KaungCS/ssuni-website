@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import type { HeroStory as HeroStoryData } from "@/lib/hero";
 
@@ -24,15 +25,20 @@ export default function HeroStory({
     <section className="relative w-full h-screen bg-ssuni-light2 flex items-center justify-center overflow-hidden">
       {/* Background Image / Storytelling Visual */}
       <div className="absolute inset-0 z-0">
-        <img
+        <Image
           src={story.imageUrl}
           alt={story.title}
-          className="w-full h-full object-cover opacity-90"
+          fill
+          // Full-bleed at every breakpoint.
+          sizes="100vw"
+          className="object-cover opacity-90"
           // Every panel is a full-screen image, so a client with six Stories
           // ships six of them. Only the first is above the fold; the rest wait
-          // until the shopper scrolls toward them.
-          loading={isFirst ? "eager" : "lazy"}
-          fetchPriority={isFirst ? "high" : "auto"}
+          // until the shopper scrolls toward them. `priority` is next/image's
+          // way of saying eager + high fetchpriority, and it must not be set on
+          // more than one panel or it stops meaning anything.
+          priority={isFirst}
+          loading={isFirst ? undefined : "lazy"}
         />
         {/* Soft overlay matching brand mood */}
         <div className="absolute inset-0 bg-ssuni-light1/10" />

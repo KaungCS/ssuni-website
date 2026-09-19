@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCart } from "@/components/CartProvider";
@@ -304,12 +305,16 @@ function CartRow({
 
   return (
     <li className="flex gap-4 sm:gap-6 py-8 border-b border-ssuni-light2">
-      <div className="w-24 h-32 bg-ssuni-light2 shrink-0 overflow-hidden">
+      {/* `relative` is required by next/image's fill mode, which positions the
+          image absolutely against its nearest positioned ancestor. */}
+      <div className="relative w-24 h-32 bg-ssuni-light2 shrink-0 overflow-hidden">
         {variant ? (
-          <img
+          <Image
             src={variant.imageUrl ?? "/images/download.jpeg"}
             alt={variant.productName}
-            className={`w-full h-full object-cover ${unavailable ? "opacity-40" : ""}`}
+            fill
+            sizes="96px"
+            className={`object-cover ${unavailable ? "opacity-40" : ""}`}
           />
         ) : null}
       </div>
