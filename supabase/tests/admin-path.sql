@@ -338,6 +338,84 @@ insert into results select 37, 'admin_hero_delete_allowed',
 
 reset role;
 
+-- ---------------------------------------------------------------------------
+-- 12. The admin gate can ask "am I an admin" without enumerating the allowlist.
+-- ---------------------------------------------------------------------------
+--
+-- admins_select_self (#21) is the first policy ever added to public.admins,
+-- which 20260825120000 deliberately left readable by nobody. The reason it is
+-- safe is narrow and worth pinning: the policy is `user_id = auth.uid()`, so it
+-- answers one question about the caller and reveals nothing about anyone else.
+--
+-- A second admin is inserted below precisely so "can I see myself" and "can I
+-- see the allowlist" give different answers. Without it, one row in the table
+-- makes both checks pass for the wrong reason -- which is not hypothetical:
+-- this project has exactly ONE row in auth.users, so the first version of this
+-- section selected no second user, inserted nothing, and check 39 passed
+-- vacuously. It would have passed against a `using (true)` policy too.
+--
+-- So the second admin is a throwaway auth.users row created here. Safe because
+-- the whole file runs in a transaction that ROLLS BACK -- the same reason this
+-- suite can insert Products and Hero Stories against production.
+
+insert into auth.users (id, instance_id, aud, role, email)
+values (
+  gen_random_uuid(),
+  '00000000-0000-0000-0000-000000000000',
+  'authenticated',
+  'authenticated',
+  'admin-path-probe-second-admin@example.test'
+);
+
+insert into public.admins (user_id)
+select id from auth.users where email = 'admin-path-probe-second-admin@example.test';
+
+-- Guard against the vacuity above ever coming back: if the allowlist does not
+-- actually hold two rows at this point, the enumeration check below is
+-- meaningless and should say so rather than pass.
+insert into results select 38, 'allowlist_has_two_rows_to_enumerate',
+  (select count(*) from public.admins) = 2, true;
+
+select pg_temp.become_subject();
+set local role authenticated;
+
+insert into results select 39, 'admin_sees_own_allowlist_row',
+  (select count(*) from public.admins where user_id = (select id from subject)) = 1, true;
+
+-- The property that matters. If this returns more than 1 the policy is wider
+-- than `user_id = auth.uid()` and the allowlist has become enumerable.
+insert into results select 40, 'admin_cannot_enumerate_allowlist',
+  (select count(*) from public.admins) <= 1, true;
+
+-- A signed-in shopper is not on the list, so the gate's read is empty for them
+-- -- which is exactly how lib/admin.ts decides to answer notFound().
+reset role;
+delete from public.admins where user_id = (select id from subject);
+select pg_temp.become_subject();
+set local role authenticated;
+
+insert into results select 41, 'non_admin_reads_no_allowlist_row',
+  (select count(*) from public.admins) = 0, true;
+
+-- Anonymous has neither policy nor grant, so this is not "zero rows" but a
+-- hard refusal. Asserted through the error rather than a count.
+select set_config('request.jwt.claims', '', true);
+set local role anon;
+
+do $$
+declare denied boolean := false;
+begin
+  begin
+    perform count(*) from public.admins;
+  exception when insufficient_privilege then
+    denied := true;
+  end;
+  insert into results select 42, 'anon_denied_allowlist_entirely', denied, true;
+end
+$$;
+
+reset role;
+
 select seq, check_name,
        case when result = expected then 'PASS' else 'FAIL' end as outcome,
        result, expected

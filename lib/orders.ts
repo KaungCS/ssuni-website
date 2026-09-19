@@ -1,7 +1,7 @@
 import { createClient } from "./supabase/server";
 
 /**
- * The only place the storefront reads Orders. Issue #20.
+ * The only place anything reads or writes Orders. Issues #20 and #21.
  *
  * Extracted from app/checkout/success/page.tsx, which had this query inline
  * with a note saying /profile would be the second caller and the point where
@@ -169,6 +169,117 @@ export async function getOrderBySession(
     .maybeSingle();
 
   return data ? toShopperOrder(data as unknown as OrderRow) : null;
+}
+
+// ---------------------------------------------------------------------------
+// The Admin Dashboard's half (#21, ADR 0007 amended). Same embed, same module.
+// ---------------------------------------------------------------------------
+
+/** The statuses an admin may set, in the order the fulfilment flow uses them. */
+export const ORDER_STATUSES = [
+  "Paid",
+  "Shipped",
+  "Delivered",
+  "Cancelled",
+  "Refunded",
+] as const;
+
+export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
+/**
+ * An Order as the admin sees it: everything the customer sees, plus the Stripe
+ * Session id.
+ *
+ * That id is here because it is the only handle the client has on the parts of
+ * a sale this database never stored -- the customer's email and, once
+ * `shipping_address_collection` is switched on, their address. Both live in
+ * Stripe. See the note in app/admin/orders/page.tsx.
+ */
+export type AdminOrder = ShopperOrder & { stripeSessionId: string };
+
+type AdminOrderRow = OrderRow & { stripe_session_id: string };
+
+/**
+ * Every Order, newest first.
+ *
+ * Note the *absence* of the `user_id` filter that `getMyOrders` is so careful
+ * to keep: here, "whatever RLS returns" is exactly right. `orders_admin_all`
+ * grants the admin every row and `orders_select_own` grants any other caller
+ * only their own, so a non-admin who somehow reached this function sees their
+ * own purchases rather than a leak. The gate in lib/admin.ts decides what is
+ * rendered; this decides nothing.
+ */
+export async function getAllOrders(): Promise<AdminOrder[]> {
+  const supabase = await createClient();
+
+  const { data } = await supabase
+    .from("orders")
+    .select(`${ORDER_SELECT}, stripe_session_id`)
+    .order("created_at", { ascending: false });
+
+  return ((data ?? []) as unknown as AdminOrderRow[]).map((row) => ({
+    ...toShopperOrder(row),
+    stripeSessionId: row.stripe_session_id,
+  }));
+}
+
+/**
+ * A tracking link is rendered into an `href` on the customer's Order page
+ * (app/profile/orders/[id]/page.tsx:77), so this is a trust boundary even
+ * though the only person who can write one is the shop owner. `javascript:` and
+ * `data:` URLs are what this exists to refuse; a mistyped http link is the
+ * admin's problem and not this function's.
+ *
+ * Returns the normalised URL or null. Empty input is null rather than an error:
+ * clearing a tracking link is a legitimate edit.
+ */
+export function parseTrackingLink(raw: string): { ok: true; value: string | null } | { ok: false } {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { ok: true, value: null };
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return { ok: false };
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") return { ok: false };
+
+  return { ok: true, value: url.toString() };
+}
+
+export function isOrderStatus(value: string): value is OrderStatus {
+  return (ORDER_STATUSES as readonly string[]).includes(value);
+}
+
+/**
+ * Mark an Order fulfilled: its Status, and its Tracking Link.
+ *
+ * Goes through RLS with the publishable key like everything else here -- it does
+ * not need lib/supabase/admin.ts and must not use it. `orders_admin_all` is the
+ * policy that permits this, and `grant update (status, tracking_link)` is
+ * column-scoped, so even an admin cannot move `total` or `user_id` through this
+ * path however the request is shaped. That grant is the real guarantee; the two
+ * parsers above are so the admin gets an error instead of a silent no-op.
+ *
+ * Returns whether a row was actually updated, so the caller can tell "saved"
+ * from "that Order is not yours / does not exist" rather than assuming.
+ */
+export async function setOrderFulfilment(
+  orderId: string,
+  status: OrderStatus,
+  trackingLink: string | null,
+): Promise<boolean> {
+  const supabase = await createClient();
+
+  const { data } = await supabase
+    .from("orders")
+    .update({ status, tracking_link: trackingLink })
+    .eq("id", orderId)
+    .select("id");
+
+  return (data ?? []).length === 1;
 }
 
 // ---------------------------------------------------------------------------
