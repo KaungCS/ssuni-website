@@ -447,5 +447,70 @@ const ordersSvc = await svc("GET", "orders?select=id&limit=1");
 check("the secret key can read orders (what #18 writes with)",
   ordersSvc.status === 200, `status ${ordersSvc.status} ${ordersSvc.json?.message ?? ""}`);
 
+// -- 11. Releasing a lapsed Session's holds (#30) -----------------------------
+section("11. checkout.session.expired releases only held Reservations (#30)");
+
+// What the webhook's expired branch does, as PostgREST sees it. Note what this
+// is NOT: it is not a test that stock comes back. Stock comes back on its own --
+// section 5 above already proves a lapsed Reservation stops holding it with
+// nothing released at all, which is the load-bearing half of ADR 0010 and the
+// reason a missed webhook cannot strand inventory.
+//
+// This covers the other half: the release must never touch a Reservation that a
+// payment already consumed. Stripe does not send `expired` for a Session that
+// completed, so the filter is belt-and-braces -- but an unfiltered UPDATE here
+// would rewrite the history of a paid Order, and that is not a thing to leave
+// resting on an assumption about another company's event ordering.
+const relVariant = (await svc("GET", "variants?select=id&order=id")).json?.[0];
+if (!relVariant) throw new Error("no variants in the database to test the release against");
+
+const relRows = [
+  { variant_id: relVariant.id, quantity: 1, unit_price: 19.99, status: "held",
+    stripe_session_id: "cs_test_rel_held", expires_at: inThirtyMinutes() },
+  { variant_id: relVariant.id, quantity: 1, unit_price: 19.99, status: "consumed",
+    stripe_session_id: "cs_test_rel_consumed", expires_at: inThirtyMinutes() },
+];
+const clearRel = () => svc("DELETE", "reservations?stripe_session_id=like.cs_test_rel_*");
+
+try {
+  const seeded = await svc("POST", "reservations", { body: relRows });
+  check("seeded a held and a consumed Reservation", seeded.status === 201,
+    `status ${seeded.status} ${seeded.text.slice(0, 120)}`);
+
+  // Exactly the filter app/api/stripe/webhook/route.ts applies.
+  const released = await svc("PATCH",
+    "reservations?stripe_session_id=eq.cs_test_rel_held&status=eq.held",
+    { body: { status: "released" }, prefer: "return=representation" });
+  check("a held Reservation is marked released",
+    released.json?.[0]?.status === "released", JSON.stringify(released.json));
+
+  // The same call against the consumed Session must match zero rows. An empty
+  // representation is the assertion: it says the predicate excluded the row,
+  // not that the update happened to write the same value back over it.
+  const spared = await svc("PATCH",
+    "reservations?stripe_session_id=eq.cs_test_rel_consumed&status=eq.held",
+    { body: { status: "released" }, prefer: "return=representation" });
+  check("a consumed Reservation is not released", spared.json?.length === 0,
+    JSON.stringify(spared.json));
+
+  const consumedStill = (await svc("GET",
+    "reservations?select=status&stripe_session_id=eq.cs_test_rel_consumed")).json?.[0];
+  check("the consumed Reservation still reads consumed",
+    consumedStill?.status === "consumed", JSON.stringify(consumedStill));
+
+  // Stripe redelivers until it gets a 2xx, so a second delivery has to be a
+  // no-op rather than an error -- the status filter is what makes it one.
+  const replay = await svc("PATCH",
+    "reservations?stripe_session_id=eq.cs_test_rel_held&status=eq.held",
+    { body: { status: "released" }, prefer: "return=representation" });
+  check("replaying the release is a no-op", replay.status === 200 && replay.json?.length === 0,
+    `status ${replay.status} ${JSON.stringify(replay.json)}`);
+} finally {
+  await clearRel();
+}
+
+const relLeft = (await svc("GET", "reservations?select=id&stripe_session_id=like.cs_test_rel_*")).json ?? [];
+check("no test Reservation left behind", relLeft.length === 0, `${relLeft.length} rows remain`);
+
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
