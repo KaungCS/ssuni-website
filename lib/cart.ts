@@ -220,9 +220,13 @@ export function parseCheckoutRequest(body: unknown): CartItem[] | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Confirmed with Kaung on 2026-09-13, matching the $X.XX the storefront
- * renders. No ADR records this; if SSUNI ever bills in another currency, this
- * is the only line to change.
+ * Confirmed with Kaung on 2026-09-13, matching the $X.XX the storefront renders,
+ * and recorded in ADR 0014 on 2026-09-18.
+ *
+ * The only line in the codebase that names a currency -- but read the ADR before
+ * changing it. Prices, `reservations.unit_price` and `order_items.unit_price`
+ * are all implicitly USD, so flipping this alone would leave Orders taken before
+ * and after the change indistinguishable from each other.
  */
 export const CHECKOUT_CURRENCY = "usd";
 

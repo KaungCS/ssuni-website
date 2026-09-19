@@ -10,6 +10,8 @@ import {
   type CatalogFilters,
   type CatalogSort,
 } from "./catalog-url";
+import { cache } from "react";
+
 import { createClient } from "./supabase/server";
 
 /**
@@ -248,8 +250,17 @@ export async function getCatalogFacets(): Promise<CatalogFacets> {
   };
 }
 
-/** One visible Product, or null when the slug matches nothing the caller may see. */
-export async function getProductBySlug(slug: string): Promise<CatalogProduct | null> {
+/**
+ * One visible Product, or null when the slug matches nothing the caller may see.
+ *
+ * Wrapped in React's `cache` because the detail page calls it twice per request:
+ * once in `generateMetadata` and once in the page body. Next.js dedupes `fetch`
+ * for you, but not a supabase-js call, so without this every product view costs
+ * two round trips to render one page. The memo lives for one request, which is
+ * exactly right on a force-dynamic page -- two reads inside a single request
+ * returning the same stock count is correct, not stale.
+ */
+export const getProductBySlug = cache(async (slug: string): Promise<CatalogProduct | null> => {
   const supabase = await createClient();
 
   const { data, error } = await supabase
@@ -261,7 +272,7 @@ export async function getProductBySlug(slug: string): Promise<CatalogProduct | n
   if (error) throw new Error(`Failed to load product "${slug}": ${error.message}`);
 
   return data ? toCatalogProduct(data as RawProduct) : null;
-}
+});
 
 // ---------------------------------------------------------------------------
 // Cart resolution (#12, #13)

@@ -512,5 +512,79 @@ try {
 const relLeft = (await svc("GET", "reservations?select=id&stripe_session_id=like.cs_test_rel_*")).json ?? [];
 check("no test Reservation left behind", relLeft.length === 0, `${relLeft.length} rows remain`);
 
+// -- 12. hero_stories -------------------------------------------------------
+section("12. Hero Stories are public to read, admin-only to write, and ordered (#22)");
+
+// Same shape as the products checks above, because hero_stories carries the same
+// pair of policies. What is specific to #22 is the last check: the landing page
+// renders these in `sort_order`, and an unordered home page is the failure the
+// client would notice first.
+
+const heroes = await anon("GET", "hero_stories?select=id,title,sort_order&order=sort_order");
+check("anon can select hero_stories", heroes.status === 200 && heroes.json?.length >= 1,
+  `status ${heroes.status}, ${heroes.json?.length ?? 0} rows (expected >= 1)`);
+
+const heroIns = await anon("POST", "hero_stories", {
+  body: { title: "rls-probe-hero anon", image_url: "/images/download.jpeg" },
+});
+check("anon INSERT on hero_stories rejected", heroIns.status === 401 || heroIns.status === 403,
+  `status ${heroIns.status} ${heroIns.json?.code ?? ""}`);
+
+const heroDel = await anon("DELETE", "hero_stories?title=like.rls-probe-hero*");
+check("anon DELETE on hero_stories affects nothing",
+  heroDel.status === 401 || heroDel.status === 403 || heroDel.status === 204,
+  `status ${heroDel.status}`);
+
+// Seeded out of display order on purpose: if the ordering check passed on
+// insertion order it would prove nothing.
+const clearHeroes = () => svc("DELETE", "hero_stories?title=like.rls-probe-hero*");
+
+try {
+  const seededHeroes = await svc("POST", "hero_stories", {
+    body: [
+      // Every object needs identical keys -- PostgREST rejects a mixed batch
+      // with PGRST102 "All object keys must match" rather than defaulting the
+      // missing ones.
+      { title: "rls-probe-hero second", image_url: "/images/download.jpeg", sort_order: 901,
+        is_hidden: false },
+      { title: "rls-probe-hero first", image_url: "/images/download.jpeg", sort_order: 900,
+        is_hidden: false },
+      { title: "rls-probe-hero hidden", image_url: "/images/download.jpeg", sort_order: 902,
+        is_hidden: true },
+    ],
+  });
+  check("seeded three probe Hero Stories", seededHeroes.status === 201,
+    `status ${seededHeroes.status} ${seededHeroes.text.slice(0, 120)}`);
+
+  const visible = ((await anon("GET", "hero_stories?select=title,sort_order&order=sort_order"))
+    .json ?? []).filter((h) => h.title.startsWith("rls-probe-hero"));
+
+  // Asserted on the probe rows only, never on the whole table: the client adds
+  // Hero Stories in Supabase Studio exactly as they add Products, and a check
+  // that counts the table turns that into a red suite (CLAUDE.md).
+  check("hero_stories come back in sort_order",
+    visible.map((h) => h.title).join(" | ") === "rls-probe-hero first | rls-probe-hero second",
+    visible.map((h) => `${h.sort_order}:${h.title}`).join(" | "));
+
+  // The Hidden rule, asserted as the property rather than as a count: the
+  // Hidden Story is gone for anon and present for the service role.
+  // The length check is not decoration: without it this passes when the seed
+  // above failed and anon can see nothing at all, which is how it read green
+  // through a broken batch insert the first time it ran.
+  check("a Hidden Hero Story is invisible to anon",
+    visible.length === 2 && !visible.some((h) => h.title === "rls-probe-hero hidden"),
+    visible.map((h) => h.title).join(" | "));
+
+  const hiddenToSvc = (await svc("GET",
+    "hero_stories?select=title&title=eq.rls-probe-hero hidden")).json ?? [];
+  check("the Hidden Hero Story still exists", hiddenToSvc.length === 1,
+    `${hiddenToSvc.length} rows`);
+} finally {
+  await clearHeroes();
+}
+
+const heroesLeft = (await svc("GET", "hero_stories?select=id&title=like.rls-probe-hero*")).json ?? [];
+check("no probe Hero Story left behind", heroesLeft.length === 0, `${heroesLeft.length} rows remain`);
+
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

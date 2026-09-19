@@ -273,6 +273,69 @@ insert into results select 31, 'complete_checkout_denied_to_anon',
   not has_function_privilege(
     'anon', 'public.complete_checkout(text, uuid, numeric)', 'execute'), true;
 
+-- 8. Hero Stories (#22): admin-only writes, exactly like Products.
+--
+--    rls.mjs section 12 proves the anonymous half. This is the half that
+--    matters to the client: a policy denying everyone passes every "is it
+--    locked?" test while leaving them unable to edit their own home page.
+--
+--    Starts as a signed-in NON-admin, which is the case neither suite covers
+--    otherwise -- anon and admin are both easy to get right while leaving a
+--    logged-in customer able to rewrite the landing page.
+--
+--    Note the non-admin probe is an UPDATE, not an INSERT. A blocked INSERT
+--    fails its WITH CHECK and RAISES (42501), which aborts this transaction and
+--    takes every result above with it -- the same trap the complete_checkout
+--    grants below are checked around. A blocked UPDATE just matches no rows.
+reset role;
+delete from public.admins where user_id = (select id from subject);
+
+select pg_temp.become_subject();
+set local role authenticated;
+
+-- Guards the next check against passing vacuously on an empty table.
+insert into results select 32, 'a_hero_story_exists_to_probe',
+  (select count(*) from public.hero_stories) >= 1, true;
+
+with attempt as (
+  update public.hero_stories set title = 'SHOULD NOT APPLY' returning 1
+)
+insert into results select 33, 'non_admin_hero_update_blocked',
+  (select count(*) from attempt) = 0, true;
+
+reset role;
+insert into public.admins (user_id) select id from subject;
+
+select pg_temp.become_subject();
+set local role authenticated;
+
+with attempt as (
+  insert into public.hero_stories (title, image_url, sort_order)
+  values ('Admin Hero Probe', '/images/download.jpeg', 900)
+  returning id
+)
+insert into results select 34, 'admin_hero_insert_allowed',
+  (select count(*) from attempt) = 1, true;
+
+with attempt as (
+  update public.hero_stories set sort_order = 901, is_hidden = true
+  where title = 'Admin Hero Probe'
+  returning 1
+)
+insert into results select 35, 'admin_hero_update_allowed',
+  (select count(*) from attempt) = 1, true;
+
+-- An admin reads the Archive: the update above just Hid this row, and the
+-- storefront half of the same policy would no longer return it.
+insert into results select 36, 'admin_sees_hidden_hero',
+  (select count(*) from public.hero_stories where title = 'Admin Hero Probe') = 1, true;
+
+with attempt as (
+  delete from public.hero_stories where title = 'Admin Hero Probe' returning 1
+)
+insert into results select 37, 'admin_hero_delete_allowed',
+  (select count(*) from attempt) = 1, true;
+
 reset role;
 
 select seq, check_name,

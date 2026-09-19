@@ -5,3 +5,21 @@ The landing page will host many Hero Stories over time, some advertising a speci
 ## Consequences
 
 Revisiting timed rotation later is still possible without restructuring the Slot/Story data model — it would only add an optional per-Story display duration, not change how Slots are assigned.
+
+## Amendment, 2026-09-18: Slots are replaced by an ordered, unbounded list
+
+Building #22 made the Slot model the wrong shape before it was ever implemented. Hero Stories are now **an unbounded list of full-bleed panels that stack vertically down the landing page**, ordered by an integer the client sets, each individually Hidden or not. There is no fixed number of positions and no distinction between a primary banner and a secondary tile: adding a row in Supabase Studio adds a section to the home page.
+
+The original decision assumed the landing page had a *fixed amount of hero real estate* that Stories competed for, which is what made assignment the interesting problem. That assumption came from the UNIQLO reference rather than from anything SSUNI needs. The client's actual request is to keep adding stories over time and have the page grow — so a Slot is a constraint the layout does not have, and the "which Story is in which Slot" workflow is a scarcity ritual around a resource that is not scarce.
+
+What survives from the original decision is the part that mattered: **the client curates, and nothing rotates.** Order is explicit and manual (`sort_order`), not derived from recency; a Story stays where it is put, indefinitely, regardless of age. Timed rotation is still rejected for the original reason.
+
+## Consequences
+
+`hero_stories` carries `sort_order` and `is_hidden` and **no `slot` column**; the landing page renders every visible row in order. Hiding the last visible Story leaves a home page with no hero at all — accepted, because it is recoverable in one click by the person who caused it, and the alternative is a table that refuses to be empty.
+
+The Slot vocabulary is retired from `CONTEXT.md`. It has never existed in code, so this costs no migration.
+
+Two consequences are the layout's, not the schema's. **Every panel is a full-screen image**, so a client adding ten Stories ships ten of them — `components/HeroStory.tsx` lazy-loads all but the first, and if the count grows past what that comfortably carries, the answer is a shorter panel variant rather than a cap on rows. And the first Story carries the page's `<h1>` while the rest are `<h2>`, so the ordering is also the page's heading outline.
+
+The Admin Dashboard (ADR 0007) now has a simpler surface to build than the one this ADR originally implied: a reorderable list with a visibility toggle, not a slot-assignment UI.
