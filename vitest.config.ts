@@ -22,7 +22,11 @@ export default defineConfig({
     // provider's hydration order, where a save effect can overwrite a stored
     // Cart before the load effect lands -- opts in per-file with a
     // `@vitest-environment jsdom` docblock, so nothing else pays for jsdom.
-    include: ["lib/**/*.test.ts", "components/**/*.test.tsx"],
+    // Route handlers are included too: the webhook's status codes are Stripe's
+    // retry protocol (#18, #30), which #32 names as TDD-required and which no
+    // pure seam can reach. Without `app/**` a test file there is silently never
+    // collected -- it passes by not running.
+    include: ["lib/**/*.test.ts", "components/**/*.test.tsx", "app/**/*.test.ts"],
   },
   resolve: {
     alias: {
