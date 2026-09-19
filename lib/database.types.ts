@@ -54,6 +54,45 @@ export type Database = {
         }
         Relationships: []
       }
+      hero_stories: {
+        Row: {
+          created_at: string
+          cta_href: string | null
+          cta_label: string | null
+          eyebrow: string | null
+          id: string
+          image_url: string
+          is_hidden: boolean
+          sort_order: number
+          subtitle: string | null
+          title: string
+        }
+        Insert: {
+          created_at?: string
+          cta_href?: string | null
+          cta_label?: string | null
+          eyebrow?: string | null
+          id?: string
+          image_url: string
+          is_hidden?: boolean
+          sort_order?: number
+          subtitle?: string | null
+          title: string
+        }
+        Update: {
+          created_at?: string
+          cta_href?: string | null
+          cta_label?: string | null
+          eyebrow?: string | null
+          id?: string
+          image_url?: string
+          is_hidden?: boolean
+          sort_order?: number
+          subtitle?: string | null
+          title?: string
+        }
+        Relationships: []
+      }
       order_items: {
         Row: {
           created_at: string

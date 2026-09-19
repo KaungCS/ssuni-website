@@ -48,10 +48,9 @@ A planned web UI on the deployed site letting the non-technical client manage Pr
 _Avoid_: CMS, back office
 
 **Hero Story**:
-A full-bleed promotional banner on the storefront landing page. The site plans to have many over time rather than a single fixed one, each independently manageable via the Admin Dashboard.
+A full-bleed promotional panel on the storefront landing page. The landing page renders every visible Hero Story, stacked vertically in an order the client sets — there is no fixed number of them, and adding one is how a section is added to the home page. Each is independently Hidden or not. Nothing auto-rotates; order is explicit and manual, never derived from recency.
 
-**Hero Slot**:
-A fixed position on the landing page (one primary banner plus a few secondary tiles, à la UNIQLO) that displays one assigned Hero Story at a time. The client manually swaps which Hero Story occupies which Slot; Slots don't auto-rotate.
+_Was_: Hero Slot — a fixed position (one primary banner plus a few secondary tiles, à la UNIQLO) that a Hero Story was assigned into. Retired 2026-09-18 with the amendment to ADR 0003, before any code used it: the landing page has no fixed hero real estate, so there was nothing for Stories to compete for.
 
 **Hidden**:
 A Product or Hero Story's state when temporarily excluded from customer-facing pages without deleting the record. Distinct from removal, which deletes it outright.
