@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { AwaitingOrder, ClearCart } from "@/components/CheckoutSuccess";
-import { createClient } from "@/lib/supabase/server";
+import { getOrderBySession, money, orderDate, orderReference } from "@/lib/orders";
 
 /**
  * Where Stripe returns the shopper after payment (#19). The URL is
@@ -31,16 +31,6 @@ export const dynamic = "force-dynamic";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-type OrderLine = {
-  quantity: number;
-  unit_price: number;
-  variants: { color: string; size: string; products: { name: string } | null } | null;
-};
-
-function money(amount: number): string {
-  return `$${amount.toFixed(2)}`;
-}
-
 export default async function CheckoutSuccessPage({
   searchParams,
 }: {
@@ -49,30 +39,11 @@ export default async function CheckoutSuccessPage({
   const sessionId = (await searchParams).session_id;
   if (typeof sessionId !== "string" || sessionId === "") notFound();
 
-  const supabase = await createClient();
-
-  // The publishable key, so this runs as the signed-in shopper and RLS scopes
-  // it to their own Orders. Never the secret key -- that would hand any pasted
-  // session id somebody else's purchase.
-  //
-  // Queried inline rather than through a lib/orders.ts: this is the only caller
-  // today. /profile (#20) is the second, and is where extracting it pays.
-  const { data: order } = await supabase
-    .from("orders")
-    .select(
-      `
-      id,
-      total,
-      created_at,
-      order_items (
-        quantity,
-        unit_price,
-        variants ( color, size, products ( name ) )
-      )
-    `,
-    )
-    .eq("stripe_session_id", sessionId)
-    .maybeSingle();
+  // Reads with the publishable key, so RLS scopes this to the visitor's own
+  // Orders -- never the secret key, which would hand any pasted session id
+  // somebody else's purchase. getOrderBySession applies no user filter of its
+  // own, deliberately; see the note on it in lib/orders.ts.
+  const order = await getOrderBySession(sessionId);
 
   if (!order) {
     return (
@@ -82,10 +53,7 @@ export default async function CheckoutSuccessPage({
     );
   }
 
-  // The uuid in full is unusable over the phone or in an email. The first block
-  // is plenty to find one Order among a shop's worth.
-  const reference = order.id.slice(0, 8).toUpperCase();
-  const lines = (order.order_items ?? []) as unknown as OrderLine[];
+  const reference = orderReference(order.id);
 
   return (
     <SuccessShell heading="Thank you">
@@ -102,18 +70,12 @@ export default async function CheckoutSuccessPage({
         </div>
         <div className="flex justify-between py-1">
           <dt className="uppercase tracking-widest text-xs text-ssuni-slate">Placed</dt>
-          <dd className="text-ssuni-brown">
-            {new Date(order.created_at).toLocaleDateString("en-US", {
-              year: "numeric",
-              month: "long",
-              day: "numeric",
-            })}
-          </dd>
+          <dd className="text-ssuni-brown">{orderDate(order.createdAt)}</dd>
         </div>
       </dl>
 
       <ul className="border-t border-ssuni-light2">
-        {lines.map((line, index) => (
+        {order.lines.map((line, index) => (
           <li
             // No id is selected for order_items, and a Variant can legitimately
             // appear once only -- so the index is stable for a list that never
@@ -126,17 +88,17 @@ export default async function CheckoutSuccessPage({
                   embed, because this read goes through RLS. The line still
                   happened and is still owed, so it renders without its name
                   rather than vanishing from the Order. */}
-              {line.variants?.products?.name ?? "Item"}
-              {line.variants && (
+              {line.name ?? "Item"}
+              {line.color && line.size && (
                 <span className="text-ssuni-slate">
                   {" "}
-                  — {line.variants.color} / {line.variants.size}
+                  — {line.color} / {line.size}
                 </span>
               )}
               <span className="text-ssuni-slate"> × {line.quantity}</span>
             </span>
             <span className="text-ssuni-brown whitespace-nowrap">
-              {money(line.unit_price * line.quantity)}
+              {money(line.unitPrice * line.quantity)}
             </span>
           </li>
         ))}
