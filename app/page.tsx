@@ -22,9 +22,24 @@ export default async function Home() {
 
   return (
     <div>
-      {stories.map((story, index) => (
-        <HeroStory key={story.id} story={story} index={index} />
-      ))}
+      {/* Every visible Story Hidden at once is one click away in Supabase Studio,
+          and #22 moved the guaranteed hero out of the code to get here. Without
+          this branch that leaves the landing page as one stray paragraph -- and,
+          because the first Story carries the page h1, with no h1 at all. */}
+      {stories.length === 0 ? (
+        <section className="min-h-[60vh] flex flex-col items-center justify-center text-center px-6">
+          <h1 className="font-cinzel text-5xl md:text-7xl uppercase tracking-wider text-ssuni-brown mb-6">
+            SSUNI
+          </h1>
+          <p className="font-belleza text-lg text-ssuni-slate">
+            Soft days and quiet elegance.
+          </p>
+        </section>
+      ) : (
+        stories.map((story, index) => (
+          <HeroStory key={story.id} story={story} index={index} />
+        ))
+      )}
 
       {/* Quick intro section or secondary collection preview */}
       <section className="py-20 px-6 max-w-7xl mx-auto text-center">
