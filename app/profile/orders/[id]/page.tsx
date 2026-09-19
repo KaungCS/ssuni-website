@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import {
   getOrder,
+  lineTotal,
   money,
   orderDate,
   orderReference,
@@ -135,7 +136,7 @@ function LineItem({ line }: { line: OrderLine }) {
         <span className="text-ssuni-slate"> × {line.quantity}</span>
       </span>
       <span className="text-ssuni-brown whitespace-nowrap">
-        {money(line.unitPrice * line.quantity)}
+        {money(lineTotal(line.unitPrice, line.quantity))}
       </span>
     </li>
   );
