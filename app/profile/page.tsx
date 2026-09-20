@@ -9,6 +9,7 @@ import {
   type ShopperOrder,
 } from "@/lib/orders";
 import { createClient } from "@/lib/supabase/server";
+import { isAdmin } from "@/lib/admin";
 
 /**
  * The shopper's own Order history. Issue #20.
@@ -19,7 +20,8 @@ import { createClient } from "@/lib/supabase/server";
  * Deliberately not the Admin Dashboard (#21, ADR 0007): this page answers "did
  * my thing ship", for one account. getMyOrders filters on user_id rather than
  * leaning on RLS alone, because the admin account satisfies orders_admin_all
- * too and would otherwise find every customer's purchases here.
+ * too and would otherwise find every customer's purchases here. An admin who
+ * lands here is sent on to /admin instead -- see the redirect below.
  */
 
 export const metadata: Metadata = {
@@ -44,6 +46,13 @@ export default async function ProfilePage() {
   // The same login gate #16 put in front of checkout, reusing the ?next=
   // round-trip app/login/page.tsx already guards against open redirects.
   if (!user) redirect(`/login?next=${encodeURIComponent("/profile")}`);
+
+  // The admin account has no use for an Order history -- it is the shop, not a
+  // customer, and every Order it could see lives in /admin/orders already. So
+  // "Profile" in the nav is the dashboard for an admin, which is also what the
+  // ?next=/profile bounce after login resolves to. Before getMyOrders, so the
+  // redirect does not pay for a query nobody reads.
+  if (await isAdmin(user.id)) redirect("/admin");
 
   const orders = await getMyOrders(user.id);
 
