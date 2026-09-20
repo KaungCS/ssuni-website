@@ -9,6 +9,7 @@ import {
   type ShopperOrder,
 } from "@/lib/orders";
 import { createClient } from "@/lib/supabase/server";
+import { signOut } from "@/lib/auth-actions";
 import { isAdmin } from "@/lib/admin";
 
 /**
@@ -60,7 +61,20 @@ export default async function ProfilePage() {
     <div className="min-h-screen pt-32 pb-24">
       <div className="max-w-2xl mx-auto px-6 text-ssuni-brown">
         <h1 className="font-cinzel text-4xl mb-2">Your Orders</h1>
-        <p className="font-belleza text-ssuni-slate mb-12">{user.email}</p>
+        <div className="flex flex-wrap items-baseline justify-between gap-4 mb-12">
+          <p className="font-belleza text-ssuni-slate">{user.email}</p>
+          {/* A plain form, so signing out needs no client component and works
+              with JavaScript off -- the same trade the Admin Dashboard's
+              fulfilment form makes. */}
+          <form action={signOut}>
+            <button
+              type="submit"
+              className="font-belleza text-xs uppercase tracking-widest text-ssuni-slate hover:text-ssuni-brown transition-colors cursor-pointer"
+            >
+              Sign out
+            </button>
+          </form>
+        </div>
 
         {orders.length === 0 ? (
           <div className="border-t border-ssuni-light2 pt-10">

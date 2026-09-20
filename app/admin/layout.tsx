@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { requireAdmin } from "@/lib/admin";
+import { signOut } from "@/lib/auth-actions";
 
 /**
  * The Admin Dashboard shell. Issue #21, per ADR 0007 (amended 2026-09-19).
@@ -48,6 +49,17 @@ export default async function AdminLayout({
             <Link href="/catalog" className="text-ssuni-slate hover:text-ssuni-brown transition-colors">
               View shop
             </Link>
+            {/* The dashboard is the only page an admin sees -- /profile sends
+                them here -- so without this there is no way off the account
+                short of waiting for the token to expire. */}
+            <form action={signOut}>
+              <button
+                type="submit"
+                className="font-belleza text-xs uppercase tracking-widest text-ssuni-slate hover:text-ssuni-brown transition-colors cursor-pointer"
+              >
+                Sign out
+              </button>
+            </form>
           </nav>
         </header>
 
