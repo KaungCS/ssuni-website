@@ -57,14 +57,13 @@ export {
   type CatalogVocabulary,
 } from "./catalog-url";
 
-/** The columns the storefront needs, and the Variant embed, in one round trip. */
+/** The columns the storefront needs, and both embeds, in one round trip. */
 const CATALOG_SELECT = `
   id,
   slug,
   name,
   description,
   price,
-  image_url,
   is_new,
   department,
   category,
@@ -74,6 +73,12 @@ const CATALOG_SELECT = `
     color,
     size,
     available_stock
+  ),
+  product_images (
+    url,
+    sort_order,
+    color,
+    created_at
   )
 ` as const;
 
@@ -85,6 +90,20 @@ export type CatalogVariant = {
   availableStock: number;
 };
 
+/** One image from a Product's gallery (#11, ADR 0009 amended). */
+export type ProductImage = {
+  url: string;
+  /**
+   * Which Variant colour this image shows, or null for "any".
+   *
+   * Carried through from the database and deliberately unread by every current
+   * caller -- see the column comment in
+   * supabase/migrations/20260919120000_product_images.sql. Wiring it is a change
+   * to ProductDetail.tsx alone.
+   */
+  color: string | null;
+};
+
 export type CatalogProduct = {
   id: string;
   slug: string;
@@ -92,6 +111,21 @@ export type CatalogProduct = {
   description: string | null;
   /** Decimal dollars, not cents. Converted at the Stripe boundary in #15. */
   price: number;
+  /**
+   * The gallery, already in display order. Empty when the client has not
+   * uploaded anything yet, which is a state the storefront has to render
+   * rather than a broken row -- the catalog is still placeholder data (#5).
+   */
+  images: ProductImage[];
+  /**
+   * The card image: `images[0]`, derived and never stored.
+   *
+   * This exists so the grid, /cart, the Open Graph tag and the Stripe line item
+   * did not all have to change when ADR 0009 was amended from one image to a
+   * gallery. Keeping a second *column* for it is what that amendment explicitly
+   * rejected -- two answers to "what is the main image" is how those surfaces
+   * come to disagree. One derived field, one source.
+   */
   imageUrl: string | null;
   isNew: boolean;
   department: string | null;
@@ -124,7 +158,6 @@ type RawProduct = {
   name: string;
   description: string | null;
   price: number;
-  image_url: string | null;
   is_new: boolean;
   department: string | null;
   category: string | null;
@@ -135,7 +168,35 @@ type RawProduct = {
     size: string | null;
     available_stock: number | null;
   }[];
+  product_images: {
+    url: string | null;
+    sort_order: number | null;
+    color: string | null;
+    created_at: string | null;
+  }[];
 };
+
+/**
+ * Gallery order: `sort_order` ascending, ties broken on `created_at`.
+ *
+ * Sorted here rather than with `.order(..., { referencedTable })` so that every
+ * query using CATALOG_SELECT gets the same order without having to remember to
+ * ask for it -- the same reason Variants are sorted in `toCatalogProduct`. The
+ * tiebreak is not decoration: `product_images` has no unique constraint on
+ * (product_id, sort_order), deliberately, so that reordering a gallery is a
+ * plain UPDATE. Without the tiebreak, two images the client left at the default
+ * 0 would swap places between requests for no visible reason.
+ */
+function toProductImages(rows: RawProduct["product_images"]): ProductImage[] {
+  return rows
+    .filter((i) => i.url !== null)
+    .sort(
+      (a, b) =>
+        (a.sort_order ?? 0) - (b.sort_order ?? 0) ||
+        (a.created_at ?? "").localeCompare(b.created_at ?? ""),
+    )
+    .map((i) => ({ url: i.url!, color: i.color }));
+}
 
 function toCatalogProduct(row: RawProduct): CatalogProduct {
   const variants = row.variants_available
@@ -148,13 +209,16 @@ function toCatalogProduct(row: RawProduct): CatalogProduct {
     }))
     .sort((a, b) => a.color.localeCompare(b.color) || sizeRank(a.size) - sizeRank(b.size));
 
+  const images = toProductImages(row.product_images);
+
   return {
     id: row.id,
     slug: row.slug,
     name: row.name,
     description: row.description,
     price: row.price,
-    imageUrl: row.image_url,
+    images,
+    imageUrl: images[0]?.url ?? null,
     isNew: row.is_new,
     department: row.department,
     category: row.category,
@@ -323,7 +387,12 @@ export async function getVariantsByIds(variantIds: string[]): Promise<ResolvedVa
         slug,
         name,
         price,
-        image_url
+        product_images (
+          url,
+          sort_order,
+          color,
+          created_at
+        )
       )
     `,
     )
@@ -340,7 +409,7 @@ export async function getVariantsByIds(variantIds: string[]): Promise<ResolvedVa
       slug: string | null;
       name: string | null;
       price: number | null;
-      image_url: string | null;
+      product_images: RawProduct["product_images"];
     } | null;
   };
 
@@ -353,7 +422,9 @@ export async function getVariantsByIds(variantIds: string[]): Promise<ResolvedVa
       variantId: row.id as string,
       productSlug: row.products?.slug ?? "",
       productName: row.products?.name ?? "",
-      imageUrl: row.products?.image_url ?? null,
+      // The card image, by the same rule as CatalogProduct.imageUrl -- so the
+      // Cart row and the Stripe line item show what the catalogue grid showed.
+      imageUrl: toProductImages(row.products?.product_images ?? [])[0]?.url ?? null,
       color: row.color ?? "",
       size: row.size ?? "",
       price: Number(row.products?.price ?? 0),

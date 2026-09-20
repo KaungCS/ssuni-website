@@ -586,5 +586,116 @@ try {
 const heroesLeft = (await svc("GET", "hero_stories?select=id&title=like.rls-probe-hero*")).json ?? [];
 check("no probe Hero Story left behind", heroesLeft.length === 0, `${heroesLeft.length} rows remain`);
 
+// -- 13. product_images + the Storage bucket --------------------------------
+section("13. Product images follow their Product, and the bucket is admin-write (#11)");
+
+// The policy under test is product_images_select_visible, which names no
+// is_hidden at all -- it asks whether the parent Product is visible and lets
+// products_select_visible answer. The check that matters is therefore the
+// Hidden one: get it wrong and the photography for an unreleased drop is
+// readable by anyone who guesses the table name.
+//
+// Uses a probe Product of its own rather than hiding a real one. Section 7
+// toggles is_hidden on seeded data and reverts it; that is fine there, but the
+// client now adds real Products between sessions (CLAUDE.md), and hiding one of
+// theirs -- even for a second, even reverted -- is a live storefront briefly
+// missing a Product.
+
+const PROBE_SLUG = "rls-probe-images-product";
+const clearProbeProduct = () => svc("DELETE", `products?slug=eq.${PROBE_SLUG}`);
+
+await clearProbeProduct();
+
+try {
+  const probe = await svc("POST", "products", {
+    body: { slug: PROBE_SLUG, name: "rls probe images", price: 1.0, is_hidden: false },
+    prefer: "return=representation",
+  });
+  const probeId = probe.json?.[0]?.id;
+  check("seeded a probe Product", probe.status === 201 && !!probeId,
+    `status ${probe.status} ${probe.text.slice(0, 120)}`);
+
+  // Inserted out of display order so that an ordering check cannot pass just by
+  // agreeing with insertion order.
+  const seededImages = await svc("POST", "product_images", {
+    body: [
+      { product_id: probeId, url: "https://example.test/b.jpg", sort_order: 1, color: null },
+      { product_id: probeId, url: "https://example.test/a.jpg", sort_order: 0, color: null },
+      { product_id: probeId, url: "https://example.test/c.jpg", sort_order: 2, color: "Sage" },
+    ],
+  });
+  check("seeded three probe images", seededImages.status === 201,
+    `status ${seededImages.status} ${seededImages.text.slice(0, 120)}`);
+
+  const visibleImages = (await anon("GET",
+    `product_images?select=url,sort_order,color&product_id=eq.${probeId}&order=sort_order`)).json ?? [];
+  check("anon can select a visible Product's images", visibleImages.length === 3,
+    `${visibleImages.length} rows (expected 3)`);
+  check("sort_order round-trips through PostgREST",
+    visibleImages.map((i) => i.url).join(" | ") ===
+      "https://example.test/a.jpg | https://example.test/b.jpg | https://example.test/c.jpg",
+    visibleImages.map((i) => `${i.sort_order}:${i.url}`).join(" | "));
+  check("the unwired color column stores what it is given",
+    visibleImages[2]?.color === "Sage", `got ${JSON.stringify(visibleImages[2]?.color)}`);
+
+  const imgIns = await anon("POST", "product_images", {
+    body: { product_id: probeId, url: "https://example.test/anon.jpg" },
+  });
+  check("anon INSERT on product_images rejected", imgIns.status === 401 || imgIns.status === 403,
+    `status ${imgIns.status} ${imgIns.json?.code ?? ""}`);
+
+  const imgDel = await anon("DELETE", `product_images?product_id=eq.${probeId}`);
+  check("anon DELETE on product_images affects nothing",
+    imgDel.status === 401 || imgDel.status === 403 || imgDel.status === 204,
+    `status ${imgDel.status}`);
+  const survived = (await svc("GET", `product_images?select=id&product_id=eq.${probeId}`)).json ?? [];
+  check("the images survived the anon DELETE", survived.length === 3,
+    `${survived.length} rows remain (expected 3)`);
+
+  // The property this whole policy exists for.
+  await svc("PATCH", `products?slug=eq.${PROBE_SLUG}`, { body: { is_hidden: true } });
+  const hiddenImages = (await anon("GET",
+    `product_images?select=url&product_id=eq.${probeId}`)).json ?? [];
+  check("a Hidden Product's images are invisible to anon", hiddenImages.length === 0,
+    `${hiddenImages.length} rows leaked`);
+  const stillThere = (await svc("GET", `product_images?select=id&product_id=eq.${probeId}`)).json ?? [];
+  check("...but they still exist", stillThere.length === 3, `${stillThere.length} rows`);
+
+  // on delete cascade: deleting a Product must not strand its gallery rows.
+  await clearProbeProduct();
+  const orphans = (await svc("GET", `product_images?select=id&product_id=eq.${probeId}`)).json ?? [];
+  check("deleting the Product cascades to its images", orphans.length === 0,
+    `${orphans.length} orphan rows`);
+} finally {
+  await clearProbeProduct();
+}
+
+// The bucket. A different API from PostgREST, so a different base URL -- but the
+// same question: the Admin Dashboard uploads from a browser (ADR 0007, amended),
+// so these policies and not the admin UI are what refuse a signed-in customer.
+const storage = (key, method, path, body) =>
+  fetch(`${URL_}/storage/v1/${path}`, {
+    method,
+    headers: { apikey: key, Authorization: `Bearer ${key}` },
+    ...(body ? { body } : {}),
+  }).then(async (r) => ({ status: r.status, text: await r.text() }));
+
+const bucketInfo = await storage(SERVICE, "GET", "bucket/product-images");
+check("the product-images bucket exists", bucketInfo.status === 200,
+  `status ${bucketInfo.status} ${bucketInfo.text.slice(0, 120)}`);
+check("the bucket is public-read", (() => {
+  try { return JSON.parse(bucketInfo.text).public === true; } catch { return false; }
+})(), bucketInfo.text.slice(0, 120));
+
+const anonUpload = await storage(ANON, "POST", "object/product-images/rls-probe.txt",
+  new Blob(["nope"]));
+check("anon upload to the bucket rejected",
+  anonUpload.status === 400 || anonUpload.status === 401 || anonUpload.status === 403,
+  `status ${anonUpload.status} ${anonUpload.text.slice(0, 120)}`);
+
+const anonUploaded = await storage(SERVICE, "GET", "object/product-images/rls-probe.txt");
+check("nothing was written by the rejected upload", anonUploaded.status === 400 || anonUploaded.status === 404,
+  `status ${anonUploaded.status}`);
+
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

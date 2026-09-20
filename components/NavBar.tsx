@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import ShopDropdown from "./ShopDropdown";
 import { useCart } from "./CartProvider";
@@ -34,15 +35,24 @@ export default function NavBar() {
         {/* Center: Brand Logos */}
         <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center gap-4">
           <Link href="/" className="flex items-center gap-3">
-            <img 
-              src="/images/ssuni-logo.png" 
-              alt="SSUNI Bunny Logo" 
+            {/* Both source files are 165x165. width/height give next/image the
+                intrinsic ratio so it reserves the right box; the height and
+                w-auto classes still decide the rendered size. */}
+            <Image
+              src="/images/ssuni-logo.png"
+              alt="SSUNI Bunny Logo"
+              width={165}
+              height={165}
+              priority
               className="h-12 w-auto object-contain"
             />
-            <img 
-              src="/images/ssuni-logo-text.png" 
-              alt="SSUNI Script Logo" 
-              className="h-10 w-auto object-contain hidden sm:block" 
+            <Image
+              src="/images/ssuni-logo-text.png"
+              alt="SSUNI Script Logo"
+              width={165}
+              height={165}
+              priority
+              className="h-10 w-auto object-contain hidden sm:block"
             />
           </Link>
         </div>

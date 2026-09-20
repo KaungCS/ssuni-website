@@ -1,4 +1,5 @@
 import React from "react";
+import Image from "next/image";
 import Link from "next/link";
 import type { CatalogProduct } from "@/lib/catalog";
 import { categoryLabel } from "@/lib/taxonomy";
@@ -22,10 +23,15 @@ export default function ProductGrid({ products }: { products: CatalogProduct[] }
         >
           {/* Image Container with 3:4 Aspect Ratio */}
           <div className="relative w-full aspect-[3/4] mb-4 overflow-hidden bg-ssuni-light2">
-            <img
+            <Image
               src={product.imageUrl ?? "/images/download.jpeg"}
               alt={product.name}
-              className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+              fill
+              // Mirrors the grid-cols classes below (1 / 2 / 3 / 4). Keep the
+              // two in step: out of sync, the browser picks the wrong size and
+              // the optimization is worse than none.
+              sizes="(min-width: 1024px) 25vw, (min-width: 768px) 33vw, (min-width: 640px) 50vw, 100vw"
+              className="object-cover transition-transform duration-700 group-hover:scale-105"
             />
             {/* 'New' Badge Overlay */}
             {product.isNew && (
