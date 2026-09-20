@@ -38,7 +38,10 @@ import { createClient } from "./supabase/server";
  *
  * - Hidden Products are excluded by RLS and by the view itself, so nothing here
  *   filters on `is_hidden`. Adding a client-side filter would imply the database
- *   isn't already doing it, which is exactly the wrong thing to imply.
+ *   isn't already doing it, which is exactly the wrong thing to imply. The
+ *   column is *selected*, which is a different thing: an admin does see Hidden
+ *   Products here, by policy, and `CatalogProduct.isHidden` is what lets the
+ *   grid say so rather than showing them as ordinary stock.
  */
 
 // The URL contract, re-exported so existing callers keep importing one module.
@@ -65,6 +68,7 @@ const CATALOG_SELECT = `
   description,
   price,
   is_new,
+  is_hidden,
   department,
   category,
   collections,
@@ -128,6 +132,18 @@ export type CatalogProduct = {
    */
   imageUrl: string | null;
   isNew: boolean;
+  /**
+   * True only ever for an admin, and that is the whole mechanism.
+   *
+   * `products_select_public` is `using (not is_hidden or is_admin())`, so a row
+   * reaching this code with `is_hidden` set proves the caller is an admin --
+   * the badge in components/ProductGrid.tsx needs no session read and no second
+   * definition of "admin" to drift from the policy.
+   *
+   * Note this is still not a filter (see the rule at the top of this file). The
+   * database decides who sees the row; this only says what the row is.
+   */
+  isHidden: boolean;
   department: string | null;
   category: string | null;
   collections: string[];
@@ -159,6 +175,7 @@ type RawProduct = {
   description: string | null;
   price: number;
   is_new: boolean;
+  is_hidden: boolean;
   department: string | null;
   category: string | null;
   collections: string[];
@@ -220,6 +237,7 @@ function toCatalogProduct(row: RawProduct): CatalogProduct {
     images,
     imageUrl: images[0]?.url ?? null,
     isNew: row.is_new,
+    isHidden: row.is_hidden,
     department: row.department,
     category: row.category,
     collections: row.collections,

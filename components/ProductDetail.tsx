@@ -136,6 +136,27 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
             {product.description}
           </p>
 
+          {/* Reachable only by an admin -- see CatalogProduct.isHidden. The
+              second line is the point of this block: `variants_available` ends
+              in `where not p.is_hidden` and has no admin exception, so the
+              colour and size pickers below render empty for a Hidden Product.
+              Without saying why, the page reads as broken rather than hidden. */}
+          {product.isHidden && (
+            <div className="border border-ssuni-brown/30 bg-ssuni-light2 px-5 py-4 mb-10">
+              <span className="inline-block bg-ssuni-brown text-ssuni-light1 px-3 py-1 text-xs font-belleza tracking-widest uppercase mb-2">
+                Hidden
+              </span>
+              <p className="font-belleza text-sm text-ssuni-slate leading-relaxed">
+                Shoppers cannot see this Product, and its colours and sizes stay
+                empty here until you unhide it in{" "}
+                <Link href="/admin/products" className="underline hover:text-ssuni-brown">
+                  the dashboard
+                </Link>
+                .
+              </p>
+            </div>
+          )}
+
           {/* Color Selector */}
           <div className="mb-8">
             <h3 className="font-belleza uppercase tracking-widest text-xs mb-3">
