@@ -21,6 +21,17 @@ grant all on results to authenticated, anon;
 create temp table subject as select id from auth.users order by created_at limit 1;
 grant all on subject to authenticated, anon;
 
+-- The subject may ALREADY be an admin, and since #21 it is: the only account on
+-- this project granted itself the Admin Dashboard, and `subject` is the oldest
+-- auth.users row. Section 1's baseline is "not an admin yet", and section 2's
+-- insert would hit admins_pkey outright -- which is how this suite started
+-- failing on a schema that had not changed.
+--
+-- Clearing the row is safe and is not a change to production: this file runs in
+-- a transaction that ROLLS BACK, so the real allowlist is intact the moment it
+-- finishes, exactly as the Products it edits are.
+delete from public.admins where user_id = (select id from subject);
+
 -- Helper: claim to be the subject user, as the authenticated role would be.
 create or replace function pg_temp.become_subject() returns void language plpgsql as $$
 begin
@@ -415,6 +426,87 @@ end
 $$;
 
 reset role;
+
+-- ---------------------------------------------------------------------------
+-- 13. Nothing in public is default-open (#24, ADR 0004).
+-- ---------------------------------------------------------------------------
+--
+-- Every check in both suites names a table. That works only for tables somebody
+-- remembered to name: a table added later with RLS left off is invisible to all
+-- of them, and ADR 0004 says "no table may go live with default-open or missing
+-- RLS policies, even temporarily during development".
+--
+-- These two are the only assertions here that cover tables which do not exist
+-- yet -- including #49's taxonomy tables, whenever they land.
+--
+-- Views are excluded because a view has no RLS of its own; it runs with the
+-- rights of its definer or its invoker, which 20260825130000 settled separately.
+
+insert into results select 43, 'every_public_table_has_rls_enabled',
+  not exists (
+    select 1 from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public'
+      and c.relkind = 'r'
+      and not c.relrowsecurity
+  ), true;
+
+-- The second invariant is NOT "every table has a policy". `reservations` has
+-- none on purpose: it is server-only (ADR 0010), written with the secret key
+-- which bypasses RLS entirely, and RLS-enabled-with-no-policy denies everyone.
+-- That is a deliberate deny-all, and rls.mjs section 3 proves it behaves as one.
+--
+-- A missing policy is therefore a lockout, not a leak -- the leak is RLS being
+-- off, which the check above covers. What is worth asserting instead is that the
+-- two halves agree: a table nobody wrote a policy for must not be handing out
+-- grants either. That catches the real mistake, which is granting select to anon
+-- and forgetting the policy, and it stays true for tables added later.
+
+insert into results select 44, 'no_public_table_grants_without_a_policy',
+  not exists (
+    select 1 from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public'
+      and c.relkind = 'r'
+      and not exists (
+        select 1 from pg_policies p
+        where p.schemaname = 'public' and p.tablename = c.relname
+      )
+      and exists (
+        select 1 from information_schema.role_table_grants g
+        where g.table_schema = 'public'
+          and g.table_name = c.relname
+          and g.grantee in ('anon', 'authenticated')
+      )
+  ), true;
+
+-- Named, so a failure above says WHICH table rather than just "something".
+-- Empty on a healthy schema, which is why it is a notice and not a check.
+do $$
+declare offenders text;
+begin
+  select string_agg(c.relname || case when c.relrowsecurity then ' (grants, no policy)' else ' (RLS off)' end, ', ')
+    into offenders
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+  where n.nspname = 'public'
+    and c.relkind = 'r'
+    and (
+      not c.relrowsecurity
+      or (
+        not exists (select 1 from pg_policies p where p.schemaname = 'public' and p.tablename = c.relname)
+        and exists (
+          select 1 from information_schema.role_table_grants g
+          where g.table_schema = 'public' and g.table_name = c.relname
+            and g.grantee in ('anon', 'authenticated')
+        )
+      )
+    );
+  if offenders is not null then
+    raise notice 'default-open tables in public: %', offenders;
+  end if;
+end
+$$;
 
 select seq, check_name,
        case when result = expected then 'PASS' else 'FAIL' end as outcome,

@@ -12,8 +12,11 @@
 // added (orders and order_items in #17, hero_stories in #22, the Storage bucket
 // in #11) so that audit is a re-run rather than a fresh manual walk.
 //
-// Writes nothing permanent: the Reservation it creates is deleted and the
-// is_hidden flag it toggles is reverted.
+// Writes nothing permanent. The Reservation it creates is deleted, the is_hidden
+// flag it toggles is reverted, and section 14's throwaway accounts, Orders and
+// probe Product are removed in a `finally`. Everything it creates carries an
+// `rls-probe-` marker and is swept at the START of the run as well as the end,
+// because a crashed run is exactly when cleanup does not happen.
 
 import { readFileSync } from "node:fs";
 
@@ -39,12 +42,16 @@ const SERVICE = env.SUPABASE_SECRET_KEY;
 if (!URL_ || !ANON) throw new Error("NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY missing from .env.local");
 if (!SERVICE) throw new Error("SUPABASE_SECRET_KEY missing from .env.local (Dashboard -> Settings -> API Keys -> Secret keys)");
 
-async function req(key, method, path, { body, prefer } = {}) {
+// `bearer` is only ever passed for a signed-in user (section 14). It is the one
+// case where the two headers legitimately differ: the publishable key says which
+// project, the token says which person. For the API keys themselves they must be
+// identical, which is why every other caller leaves it unset.
+async function req(key, method, path, { body, prefer, bearer } = {}) {
   const res = await fetch(`${URL_}/rest/v1/${path}`, {
     method,
     headers: {
       apikey: key,
-      Authorization: `Bearer ${key}`,
+      Authorization: `Bearer ${bearer ?? key}`,
       "Content-Type": "application/json",
       ...(prefer ? { Prefer: prefer } : {}),
     },
@@ -77,9 +84,18 @@ check("anon can select products", products.status === 200 && products.json?.leng
   `status ${products.status}, ${products.json?.length ?? 0} rows (expected >= 2)`);
 if (products.json?.length) console.log("        ", JSON.stringify(products.json));
 
+// Not a floor of 6. That literal was the count of the seeded Variants, and it
+// goes red the moment the client Hides a Product in the dashboard -- which is an
+// ordinary thing for them to do, and not a policy failure. The property that
+// holds at any catalog size and any Hidden state is the one the policy actually
+// claims: anon sees every Variant of every visible Product, and no others.
 const variants = await anon("GET", "variants?select=color,size,stock");
-check("anon can select variants", variants.status === 200 && variants.json?.length >= 6,
-  `status ${variants.status}, ${variants.json?.length ?? 0} rows (expected >= 6)`);
+const visibleVariantCount = (await svc(
+  "GET", "variants?select=id,products!inner(is_hidden)&products.is_hidden=is.false"
+)).json?.length ?? -1;
+check("anon sees exactly the Variants of visible Products",
+  variants.status === 200 && variants.json?.length === visibleVariantCount,
+  `status ${variants.status}, anon ${variants.json?.length ?? 0} vs ${visibleVariantCount} visible`);
 
 // Baselines, read from the database rather than hardcoded. Every later check
 // that needs "how many" compares against these. The floors above are the only
@@ -113,11 +129,15 @@ const vIns = await anon("POST", "variants", { body: { product_id: null, color: "
 check("anon INSERT on variants rejected", vIns.status === 401 || vIns.status === 403,
   `status ${vIns.status} ${vIns.json?.code ?? ""}`);
 
+// Compared against the snapshot taken moments ago, not against a hardcoded slug
+// and price. The claim here is "nothing the anon key attempted changed anything",
+// which is true of whatever catalog happens to exist -- naming rabbit-hole-hoodie
+// at 65 turned a Hidden Product, or an edited price, into a fake RLS failure.
 const still = await anon("GET", "products?select=slug,price&order=slug");
-check("catalog survived the write attempts unchanged",
-  still.json?.length === productCount &&
-    Number(still.json.find((p) => p.slug === "rabbit-hole-hoodie")?.price) === 65,
-  JSON.stringify(still.json));
+const before = JSON.stringify((products.json ?? []).map((p) => [p.slug, Number(p.price)]));
+const after = JSON.stringify((still.json ?? []).map((p) => [p.slug, Number(p.price)]));
+check("catalog survived the write attempts unchanged", before === after && still.json?.length === productCount,
+  before === after ? JSON.stringify(still.json) : `before ${before} / after ${after}`);
 
 // -- 3. reservations are invisible ------------------------------------------
 section("3. Reservations are server-only");
@@ -251,54 +271,76 @@ const hoodieTerms = new Set([
   ...(hoodie?.collections ?? []).map((c) => `collection:${c}`),
 ]);
 
-await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: true } });
-
-const hiddenProducts = (await anon("GET", "products?select=slug")).json;
-check("the Hidden Product vanishes from anon's catalog",
-  Array.isArray(hiddenProducts) &&
-    !hiddenProducts.some((p) => p.slug === "rabbit-hole-hoodie") &&
-    hiddenProducts.length === productCount - 1,
-  JSON.stringify(hiddenProducts));
-
-const hiddenAvail = (await anon("GET", `variants_available?select=color,size&product_id=eq.${hoodieId}`)).json;
-check("its Variants vanish from variants_available too",
-  hiddenAvail?.length === 0, `${hiddenAvail?.length ?? "?"} rows`);
-
-const hiddenVariants = (await anon("GET", `variants?select=color,size&product_id=eq.${hoodieId}`)).json;
-check("and from variants", hiddenVariants?.length === 0, `${hiddenVariants?.length ?? "?"} rows`);
-
-const facetsWhileHidden = await facetTerms();
-check("catalog_facets still matches what anon can see, with the Product Hidden",
-  sameTerms(facetsWhileHidden, await termsAnonCanSee()),
-  JSON.stringify([...facetsWhileHidden]));
-
-// The sharper claim, when the data supports it: a term nothing else carries is
-// gone from the drawer entirely, so no shopper can tick a filter whose only
-// Product is Hidden. Shared terms must survive -- hiding one Product must not
-// empty a facet other Products still populate.
-const exclusive = [...hoodieTerms].filter((t) => !facetsWhileHidden.has(t));
-const shared = [...hoodieTerms].filter((t) => facetsWhileHidden.has(t));
-if (exclusive.length > 0) {
-  check("a term only the Hidden Product carried is gone from the facets",
-    exclusive.every((t) => facetsBefore.has(t)), JSON.stringify(exclusive));
-} else {
-  console.log("         (no term was exclusive to the hoodie in the current catalog;");
-  console.log("          the equality checks above still cover the Hidden rule)");
+// The client Hides Products in the dashboard, so this Product may ALREADY be
+// Hidden when the suite runs -- and until 2026-09-22 the revert below set
+// is_hidden to false unconditionally, meaning a test run silently un-hid a
+// Product the client had deliberately hidden. Capture the prior state, force
+// the starting condition these checks assume, and put the restore in a finally
+// so a failed assertion cannot leave the storefront changed either.
+const hoodieWasHidden = (await svc("GET", "products?select=is_hidden&slug=eq.rabbit-hole-hoodie")).json?.[0]?.is_hidden === true;
+if (hoodieWasHidden) {
+  console.log("         (this Product was already Hidden; it is shown for the length of this",);
+  console.log("          section and restored to Hidden afterwards)");
+  await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: false } });
 }
-check("terms other visible Products also carry survive the hide",
-  shared.every((t) => facetsBefore.has(t)), JSON.stringify(shared));
 
-await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: false } });
-const restored = (await anon("GET", "products?select=slug")).json;
-check("reverted: the Product is visible again",
-  Array.isArray(restored) &&
-    restored.some((p) => p.slug === "rabbit-hole-hoodie") &&
-    restored.length === productCount,
-  JSON.stringify(restored));
+try {
+  await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: true } });
 
-const facetsAfter = await facetTerms();
-check("reverted: its terms are back in the facets",
-  sameTerms(facetsAfter, facetsBefore), JSON.stringify([...facetsAfter]));
+  const hiddenProducts = (await anon("GET", "products?select=slug")).json;
+  check("the Hidden Product vanishes from anon's catalog",
+    Array.isArray(hiddenProducts) &&
+      !hiddenProducts.some((p) => p.slug === "rabbit-hole-hoodie") &&
+      hiddenProducts.length === productCount - 1,
+    JSON.stringify(hiddenProducts));
+
+  const hiddenAvail = (await anon("GET", `variants_available?select=color,size&product_id=eq.${hoodieId}`)).json;
+  check("its Variants vanish from variants_available too",
+    hiddenAvail?.length === 0, `${hiddenAvail?.length ?? "?"} rows`);
+
+  const hiddenVariants = (await anon("GET", `variants?select=color,size&product_id=eq.${hoodieId}`)).json;
+  check("and from variants", hiddenVariants?.length === 0, `${hiddenVariants?.length ?? "?"} rows`);
+
+  const facetsWhileHidden = await facetTerms();
+  check("catalog_facets still matches what anon can see, with the Product Hidden",
+    sameTerms(facetsWhileHidden, await termsAnonCanSee()),
+    JSON.stringify([...facetsWhileHidden]));
+
+  // The sharper claim, when the data supports it: a term nothing else carries is
+  // gone from the drawer entirely, so no shopper can tick a filter whose only
+  // Product is Hidden. Shared terms must survive -- hiding one Product must not
+  // empty a facet other Products still populate.
+  const exclusive = [...hoodieTerms].filter((t) => !facetsWhileHidden.has(t));
+  const shared = [...hoodieTerms].filter((t) => facetsWhileHidden.has(t));
+  if (exclusive.length > 0) {
+    check("a term only the Hidden Product carried is gone from the facets",
+      exclusive.every((t) => facetsBefore.has(t)), JSON.stringify(exclusive));
+  } else {
+    console.log("         (no term was exclusive to the hoodie in the current catalog;");
+    console.log("          the equality checks above still cover the Hidden rule)");
+  }
+  check("terms other visible Products also carry survive the hide",
+    shared.every((t) => facetsBefore.has(t)), JSON.stringify(shared));
+
+} finally {
+  await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: hoodieWasHidden } });
+}
+
+// Only meaningful when the Product is meant to be visible; when the client has
+// it Hidden, "visible again" is not the state to restore.
+if (!hoodieWasHidden) {
+  const restored = (await anon("GET", "products?select=slug")).json;
+  check("reverted: the Product is visible again",
+    Array.isArray(restored) &&
+      restored.some((p) => p.slug === "rabbit-hole-hoodie") &&
+      restored.length === productCount,
+    JSON.stringify(restored));
+
+  const facetsAfter = await facetTerms();
+  check("reverted: its terms are back in the facets",
+    sameTerms(facetsAfter, facetsBefore), JSON.stringify([...facetsAfter]));
+}
+
 
 // -- 8. seed is idempotent ---------------------------------------------------
 section("8. Seed idempotency (issue #4)");
@@ -696,6 +738,285 @@ check("anon upload to the bucket rejected",
 const anonUploaded = await storage(SERVICE, "GET", "object/product-images/rls-probe.txt");
 check("nothing was written by the rejected upload", anonUploaded.status === 400 || anonUploaded.status === 404,
   `status ${anonUploaded.status}`);
+
+// -- 14 & 15. real signed-in sessions ----------------------------------------
+//
+// Everything above this line is the anon key or the secret key. #24 asks for a
+// third identity -- "attempting each forbidden read and write ... with a second
+// customer's session" -- and until now that was only simulated, in
+// admin-path.sql, by setting request.jwt.claims. That proves the policy
+// EXPRESSION. It does not prove the path: PostgREST parsing a real token and
+// resolving a real role, which is what a browser actually does.
+//
+// This was believed to be blocked by the Resend single-address limit (#27). It
+// is not: the Auth admin API creates a confirmed user, the password grant
+// returns a real token, and the admin API deletes the user afterwards. No email
+// is sent at any point. The limit blocks manual testing, not this.
+
+const PROBE_PREFIX = "rls-probe-";
+const PROBE_PASSWORD = "rls-probe-pw-9f3a";
+const PROBE_SESSION = "cs_test_rls_probe_";
+const PROBE_HIDDEN_SLUG = "rls-probe-hidden-product";
+
+async function auth(key, method, path, { body, bearer } = {}) {
+  const res = await fetch(`${URL_}/auth/v1/${path}`, {
+    method,
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${bearer ?? key}`,
+      "Content-Type": "application/json",
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { /* non-json body */ }
+  return { status: res.status, json, text };
+}
+
+/** Everything this section could have left behind, whether or not it finished. */
+async function sweepProbes() {
+  await svc("DELETE", `orders?stripe_session_id=like.${PROBE_SESSION}*`);
+  await svc("DELETE", `products?slug=eq.${PROBE_HIDDEN_SLUG}`);
+  const listed = await auth(SERVICE, "GET", "admin/users?per_page=200");
+  const stale = (listed.json?.users ?? []).filter((u) => (u.email ?? "").startsWith(PROBE_PREFIX));
+  for (const u of stale) {
+    await svc("DELETE", `admins?user_id=eq.${u.id}`);
+    await auth(SERVICE, "DELETE", `admin/users/${u.id}`);
+  }
+  return stale.length;
+}
+
+/**
+ * A throwaway account with a real session. `as` sends the publishable key as the
+ * apikey and this user's token as the Bearer, which is exactly what
+ * supabase-js does in a signed-in browser.
+ */
+async function createProbeUser(tag) {
+  const email = `${PROBE_PREFIX}${tag}-${Date.now()}@example.com`;
+  const created = await auth(SERVICE, "POST", "admin/users", {
+    // email_confirm skips the confirmation mail AND the unconfirmed state that
+    // would otherwise refuse the password grant below.
+    body: { email, password: PROBE_PASSWORD, email_confirm: true },
+  });
+  const signedIn = await auth(ANON, "POST", "token?grant_type=password", {
+    body: { email, password: PROBE_PASSWORD },
+  });
+  const token = signedIn.json?.access_token;
+  return {
+    tag,
+    email,
+    id: created.json?.id,
+    token,
+    ok: Boolean(created.json?.id && token),
+    as: (m, p, o) => req(ANON, m, p, { ...o, bearer: token }),
+    storageAs: (method, path, body) =>
+      fetch(`${URL_}/storage/v1/${path}`, {
+        method,
+        headers: { apikey: ANON, Authorization: `Bearer ${token}` },
+        ...(body ? { body } : {}),
+      }).then(async (r) => ({ status: r.status, text: await r.text() })),
+  };
+}
+
+section("14. Two real signed-in customers (#24)");
+
+const swept = await sweepProbes();
+if (swept > 0) console.log(`  (swept ${swept} leftover probe account(s) from an earlier run)`);
+
+let customerA = null;
+let customerB = null;
+let probeAdmin = null;
+
+try {
+  customerA = await createProbeUser("a");
+  customerB = await createProbeUser("b");
+  check("two throwaway customers can sign in with real tokens",
+    customerA.ok && customerB.ok,
+    `A ${customerA.ok ? "ok" : "failed"}, B ${customerB.ok ? "ok" : "failed"}`);
+
+  // Give each one an Order the way the webhook does -- with the secret key,
+  // because nothing holding a browser key may create an Order (section 10).
+  const anyVariant = (await svc("GET", "variants?select=id&limit=1")).json?.[0]?.id;
+
+  async function giveOrder(user, suffix) {
+    const order = await svc("POST", "orders", {
+      body: { user_id: user.id, stripe_session_id: `${PROBE_SESSION}${suffix}`, total: 42.0 },
+      prefer: "return=representation",
+    });
+    const id = order.json?.[0]?.id;
+    if (id && anyVariant) {
+      await svc("POST", "order_items", {
+        body: { order_id: id, variant_id: anyVariant, quantity: 1, unit_price: 42.0 },
+      });
+    }
+    return id;
+  }
+
+  const orderA = await giveOrder(customerA, "a");
+  const orderB = await giveOrder(customerB, "b");
+  check("both probe Orders were created by the secret key", Boolean(orderA && orderB),
+    `A ${orderA ?? "none"}, B ${orderB ?? "none"}`);
+
+  // A Hidden Product of our own. Section 7 toggles is_hidden on seeded rows and
+  // reverts it; that is fine there, but the client adds real Products between
+  // sessions and hiding one of theirs -- even briefly -- is a live storefront
+  // missing a Product.
+  const hidden = await svc("POST", "products", {
+    body: {
+      slug: PROBE_HIDDEN_SLUG, name: "RLS probe hidden", price: 10.0, is_hidden: true,
+    },
+    prefer: "return=representation",
+  });
+  const hiddenId = hidden.json?.[0]?.id;
+
+  // -- what customer A may read ---------------------------------------------
+
+  const aOrders = (await customerA.as("GET", "orders?select=id")).json ?? [];
+  check("customer A sees their own Order",
+    aOrders.some((o) => o.id === orderA), `${aOrders.length} rows`);
+  check("customer A does NOT see customer B's Order",
+    !aOrders.some((o) => o.id === orderB), `${aOrders.length} rows`);
+
+  // The likelier shape of a leak: not selecting order_items directly, but
+  // pulling them up through the Order they hang off. A different policy path.
+  const embedded = await customerA.as("GET", `orders?select=id,order_items(id)&id=eq.${orderB}`);
+  check("customer A cannot reach B's Order Items through the embed",
+    (embedded.json ?? []).length === 0, `${(embedded.json ?? []).length} rows`);
+
+  const aItems = (await customerA.as("GET", "order_items?select=id,order_id")).json ?? [];
+  check("customer A's Order Items contain none of B's",
+    !aItems.some((i) => i.order_id === orderB), `${aItems.length} rows`);
+
+  // -- what customer A may write --------------------------------------------
+
+  // Fulfilment is the shop's word. There is no own-Order update policy, so this
+  // matches nothing and changes nothing -- asserted by re-reading rather than by
+  // the status code, because "updated zero rows" is a 2xx.
+  await customerA.as("PATCH", `orders?id=eq.${orderA}`, {
+    body: { status: "Shipped", tracking_link: "https://example.com/nope" },
+    prefer: "return=representation",
+  });
+  const afterSelfUpdate = (await svc("GET", `orders?select=status,tracking_link&id=eq.${orderA}`)).json?.[0];
+  check("customer A cannot mark their own Order Shipped",
+    afterSelfUpdate?.status === "Paid" && afterSelfUpdate?.tracking_link === null,
+    `status ${afterSelfUpdate?.status}, tracking ${afterSelfUpdate?.tracking_link}`);
+
+  const aAdmins = await customerA.as("GET", "admins?select=user_id");
+  check("customer A sees no rows in admins (admins_select_self)",
+    aAdmins.status === 200 && (aAdmins.json ?? []).length === 0,
+    `status ${aAdmins.status}, ${(aAdmins.json ?? []).length} rows`);
+
+  const aResv = await customerA.as("GET", "reservations?select=id");
+  check("customer A cannot read reservations",
+    aResv.status === 401 || aResv.status === 403 || (aResv.json ?? []).length === 0,
+    `status ${aResv.status}, ${(aResv.json ?? []).length ?? 0} rows`);
+
+  const aProductIns = await customerA.as("POST", "products", {
+    body: { slug: "rls-probe-customer-write", name: "nope", price: 1 },
+  });
+  check("customer A cannot insert a Product",
+    aProductIns.status === 401 || aProductIns.status === 403,
+    `status ${aProductIns.status} ${aProductIns.json?.code ?? ""}`);
+
+  await customerA.as("PATCH", `products?id=eq.${hiddenId}`, { body: { name: "hacked" } });
+  const nameAfter = (await svc("GET", `products?select=name&id=eq.${hiddenId}`)).json?.[0]?.name;
+  check("customer A cannot rename a Product", nameAfter === "RLS probe hidden", `name is "${nameAfter}"`);
+
+  await customerA.as("DELETE", `products?id=eq.${hiddenId}`);
+  const stillExists = (await svc("GET", `products?select=id&id=eq.${hiddenId}`)).json ?? [];
+  check("customer A cannot delete a Product", stillExists.length === 1, `${stillExists.length} rows`);
+
+  const aHeroIns = await customerA.as("POST", "hero_stories", {
+    body: { title: "rls-probe-hero customer", image_url: "/images/download.jpeg" },
+  });
+  check("customer A cannot insert a Hero Story",
+    aHeroIns.status === 401 || aHeroIns.status === 403,
+    `status ${aHeroIns.status} ${aHeroIns.json?.code ?? ""}`);
+
+  const aImageIns = await customerA.as("POST", "product_images", {
+    body: { product_id: hiddenId, url: "https://example.com/nope.jpg", sort_order: 0 },
+  });
+  check("customer A cannot insert a product image",
+    aImageIns.status === 401 || aImageIns.status === 403,
+    `status ${aImageIns.status} ${aImageIns.json?.code ?? ""}`);
+
+  // The bucket, as a signed-in customer rather than anonymously. This is the
+  // likelier attacker and the exact path components/AdminImageUploader.tsx
+  // takes in a browser -- it uploads client-side, so the policy is the boundary.
+  const aUpload = await customerA.storageAs("POST", "object/product-images/rls-probe-customer.txt",
+    new Blob(["nope"]));
+  check("customer A cannot upload to the product-images bucket",
+    aUpload.status === 400 || aUpload.status === 401 || aUpload.status === 403,
+    `status ${aUpload.status} ${aUpload.text.slice(0, 120)}`);
+
+  const aSeesHidden = (await customerA.as("GET", `products?select=id&slug=eq.${PROBE_HIDDEN_SLUG}`)).json ?? [];
+  check("customer A cannot see a Hidden Product", aSeesHidden.length === 0, `${aSeesHidden.length} rows`);
+
+  // -- 15. a real admin session, and losing it ------------------------------
+
+  section("15. A real admin session, and what revoking it takes away (#24)");
+
+  probeAdmin = await createProbeUser("admin");
+  await svc("POST", "admins", { body: { user_id: probeAdmin.id } });
+  check("a throwaway admin can sign in", probeAdmin.ok, probeAdmin.ok ? "" : "no token");
+
+  const adminSeesHidden = (await probeAdmin.as("GET", `products?select=id&slug=eq.${PROBE_HIDDEN_SLUG}`)).json ?? [];
+  check("the admin sees the Hidden Product", adminSeesHidden.length === 1, `${adminSeesHidden.length} rows`);
+
+  await probeAdmin.as("PATCH", `products?id=eq.${hiddenId}`, { body: { name: "RLS probe renamed" } });
+  const adminRenamed = (await svc("GET", `products?select=name&id=eq.${hiddenId}`)).json?.[0]?.name;
+  check("the admin can rename a Product", adminRenamed === "RLS probe renamed", `name is "${adminRenamed}"`);
+
+  const adminOrders = (await probeAdmin.as("GET", "orders?select=id")).json ?? [];
+  check("the admin sees every customer's Orders (orders_admin_all)",
+    adminOrders.some((o) => o.id === orderA) && adminOrders.some((o) => o.id === orderB),
+    `${adminOrders.length} rows`);
+
+  await probeAdmin.as("PATCH", `orders?id=eq.${orderA}`, {
+    body: { status: "Shipped", tracking_link: "https://example.com/track/rls-probe" },
+  });
+  const fulfilled = (await svc("GET", `orders?select=status,tracking_link,total&id=eq.${orderA}`)).json?.[0];
+  check("the admin can mark an Order Shipped with a Tracking Link",
+    fulfilled?.status === "Shipped" && fulfilled?.tracking_link?.includes("rls-probe"),
+    `status ${fulfilled?.status}, tracking ${fulfilled?.tracking_link}`);
+
+  // The grant on orders is column-scoped to (status, tracking_link), so even an
+  // admin cannot move money through the fulfilment path. A policy would not stop
+  // this; the grant does.
+  await probeAdmin.as("PATCH", `orders?id=eq.${orderA}`, { body: { total: 1 } });
+  const totalAfter = (await svc("GET", `orders?select=total&id=eq.${orderA}`)).json?.[0]?.total;
+  check("not even the admin can change an Order's total (column-scoped grant)",
+    Number(totalAfter) === 42, `total is ${totalAfter}`);
+
+  // Revocation, on the SAME token. Admin-ness is a row in a table read on every
+  // request, not a claim baked into the JWT -- so removing the row takes effect
+  // immediately, without waiting for the token to expire. Nothing checked this
+  // before, and it is what makes "remove an admin" actually work.
+  await svc("DELETE", `admins?user_id=eq.${probeAdmin.id}`);
+
+  const exAdminHidden = (await probeAdmin.as("GET", `products?select=id&slug=eq.${PROBE_HIDDEN_SLUG}`)).json ?? [];
+  check("after removal, the same token no longer sees Hidden Products",
+    exAdminHidden.length === 0, `${exAdminHidden.length} rows`);
+
+  await probeAdmin.as("PATCH", `products?id=eq.${hiddenId}`, { body: { name: "ex-admin" } });
+  const exAdminName = (await svc("GET", `products?select=name&id=eq.${hiddenId}`)).json?.[0]?.name;
+  check("after removal, the same token can no longer write the catalog",
+    exAdminName === "RLS probe renamed", `name is "${exAdminName}"`);
+
+  const exAdminOrders = (await probeAdmin.as("GET", "orders?select=id")).json ?? [];
+  check("after removal, the same token sees no other customer's Orders",
+    !exAdminOrders.some((o) => o.id === orderA || o.id === orderB),
+    `${exAdminOrders.length} rows`);
+} finally {
+  // Not conditional on success. A failed assertion above must still leave the
+  // production project exactly as it was found.
+  await sweepProbes();
+  const leftover = await auth(SERVICE, "GET", "admin/users?per_page=200");
+  const remaining = (leftover.json?.users ?? []).filter((u) => (u.email ?? "").startsWith(PROBE_PREFIX));
+  check("every throwaway account and Order was cleaned up", remaining.length === 0,
+    `${remaining.length} probe account(s) left behind`);
+}
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
