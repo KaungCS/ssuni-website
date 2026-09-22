@@ -442,14 +442,29 @@ reset role;
 -- Views are excluded because a view has no RLS of its own; it runs with the
 -- rights of its definer or its invoker, which 20260825130000 settled separately.
 
+-- One definition of "at risk", read three times below. Written out per check it
+-- was three copies of the same four-table join, which is three places for the
+-- next person to update two of.
+create temp table table_risk as
+select c.relname as table_name,
+       c.relrowsecurity as rls_enabled,
+       exists (
+         select 1 from pg_policies p
+         where p.schemaname = 'public' and p.tablename = c.relname
+       ) as has_policy,
+       exists (
+         select 1 from information_schema.role_table_grants g
+         where g.table_schema = 'public'
+           and g.table_name = c.relname
+           and g.grantee in ('anon', 'authenticated')
+       ) as has_browser_grant
+from pg_class c
+join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public'
+  and c.relkind = 'r';
+
 insert into results select 43, 'every_public_table_has_rls_enabled',
-  not exists (
-    select 1 from pg_class c
-    join pg_namespace n on n.oid = c.relnamespace
-    where n.nspname = 'public'
-      and c.relkind = 'r'
-      and not c.relrowsecurity
-  ), true;
+  not exists (select 1 from table_risk where not rls_enabled), true;
 
 -- The second invariant is NOT "every table has a policy". `reservations` has
 -- none on purpose: it is server-only (ADR 0010), written with the secret key
@@ -463,45 +478,25 @@ insert into results select 43, 'every_public_table_has_rls_enabled',
 -- and forgetting the policy, and it stays true for tables added later.
 
 insert into results select 44, 'no_public_table_grants_without_a_policy',
-  not exists (
-    select 1 from pg_class c
-    join pg_namespace n on n.oid = c.relnamespace
-    where n.nspname = 'public'
-      and c.relkind = 'r'
-      and not exists (
-        select 1 from pg_policies p
-        where p.schemaname = 'public' and p.tablename = c.relname
-      )
-      and exists (
-        select 1 from information_schema.role_table_grants g
-        where g.table_schema = 'public'
-          and g.table_name = c.relname
-          and g.grantee in ('anon', 'authenticated')
-      )
-  ), true;
+  not exists (select 1 from table_risk where not has_policy and has_browser_grant), true;
+
+-- #24's done-when names "any profiles table". There is none -- a shopper's
+-- identity lives in auth.users and their Orders carry the user_id -- so that
+-- clause is vacuously met. Asserted rather than assumed, so the audit's evidence
+-- says WHY it is absent instead of silently skipping it, and so the day someone
+-- adds one it arrives with this suite already asking about it.
+insert into results select 45, 'no_profiles_table_to_audit',
+  not exists (select 1 from table_risk where table_name like 'profile%'), true;
 
 -- Named, so a failure above says WHICH table rather than just "something".
 -- Empty on a healthy schema, which is why it is a notice and not a check.
 do $$
 declare offenders text;
 begin
-  select string_agg(c.relname || case when c.relrowsecurity then ' (grants, no policy)' else ' (RLS off)' end, ', ')
+  select string_agg(table_name || case when rls_enabled then ' (grants, no policy)' else ' (RLS off)' end, ', ')
     into offenders
-  from pg_class c
-  join pg_namespace n on n.oid = c.relnamespace
-  where n.nspname = 'public'
-    and c.relkind = 'r'
-    and (
-      not c.relrowsecurity
-      or (
-        not exists (select 1 from pg_policies p where p.schemaname = 'public' and p.tablename = c.relname)
-        and exists (
-          select 1 from information_schema.role_table_grants g
-          where g.table_schema = 'public' and g.table_name = c.relname
-            and g.grantee in ('anon', 'authenticated')
-        )
-      )
-    );
+  from table_risk
+  where not rls_enabled or (not has_policy and has_browser_grant);
   if offenders is not null then
     raise notice 'default-open tables in public: %', offenders;
   end if;

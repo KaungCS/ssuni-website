@@ -183,7 +183,21 @@ section("5. A held Reservation reduces Available Stock (ADR 0010)");
 // Every assertion below is relative to what the view reports right now rather
 // than to a literal: the client edits stock in Supabase Studio (#5), and this
 // Variant may already be carrying someone's live hold.
-const target = (await svc("GET", "variants?select=id,color,size,stock&color=eq.Espresso&size=eq.M")).json?.[0];
+//
+// The Variant is chosen by PROPERTY, not by name or position. Espresso/M is a
+// Variant of one specific seeded Product, and when the client Hides that Product
+// in the dashboard -- an ordinary thing to do -- anon can no longer read its
+// Available Stock and every arithmetic check below compares undefined. Nothing
+// was wrong with the policies; the suite had just picked an unbuyable Variant.
+//
+// `products!inner(is_hidden)` filters on the parent, which is the same shape
+// section 1 uses to count what anon should see.
+const visibleVariants = async (minStock) =>
+  (await svc("GET",
+    `variants?select=id,color,size,stock,products!inner(is_hidden)&products.is_hidden=is.false&stock=gte.${minStock}&order=id`
+  )).json ?? [];
+
+const target = (await visibleVariants(2))[0];
 check("found a target Variant with room to hold 2", (target?.stock ?? 0) >= 2, JSON.stringify(target));
 
 const availBefore = (await anon("GET", `variants_available?select=available_stock&id=eq.${target.id}`))
@@ -256,6 +270,28 @@ const termsAnonCanSee = async () => {
 
 const sameTerms = (a, b) => a.size === b.size && [...a].every((t) => b.has(t));
 
+// The client Hides Products in the dashboard, so this Product may ALREADY be
+// Hidden when the suite runs -- and until 2026-09-22 the revert below set
+// is_hidden to false unconditionally, meaning a test run silently un-hid a
+// Product the client had deliberately hidden. Capture the prior state, force
+// the starting condition these checks assume, and put the restore in a finally
+// so a failed assertion cannot leave the storefront changed either.
+//
+// This happens BEFORE the baselines below, not after. facetsBefore and the
+// visible-Product count both have to be read in the state the checks assume;
+// captured while the Product was still Hidden they are off by one, and the
+// already-Hidden path fails for a reason that has nothing to do with RLS.
+const hoodieWasHidden = (await svc("GET", "products?select=is_hidden&slug=eq.rabbit-hole-hoodie")).json?.[0]?.is_hidden === true;
+if (hoodieWasHidden) {
+  console.log("         (this Product was already Hidden; it is shown for the length of this");
+  console.log("          section and restored to Hidden afterwards)");
+  await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: false } });
+}
+
+// Re-read rather than reusing section 1's productCount, which was taken before
+// the line above could have changed what anon sees.
+const visibleBefore = (await anon("GET", "products?select=slug")).json?.length ?? 0;
+
 const facetsBefore = await facetTerms();
 check("catalog_facets matches the terms anon's visible Products carry",
   sameTerms(facetsBefore, await termsAnonCanSee()),
@@ -271,19 +307,6 @@ const hoodieTerms = new Set([
   ...(hoodie?.collections ?? []).map((c) => `collection:${c}`),
 ]);
 
-// The client Hides Products in the dashboard, so this Product may ALREADY be
-// Hidden when the suite runs -- and until 2026-09-22 the revert below set
-// is_hidden to false unconditionally, meaning a test run silently un-hid a
-// Product the client had deliberately hidden. Capture the prior state, force
-// the starting condition these checks assume, and put the restore in a finally
-// so a failed assertion cannot leave the storefront changed either.
-const hoodieWasHidden = (await svc("GET", "products?select=is_hidden&slug=eq.rabbit-hole-hoodie")).json?.[0]?.is_hidden === true;
-if (hoodieWasHidden) {
-  console.log("         (this Product was already Hidden; it is shown for the length of this",);
-  console.log("          section and restored to Hidden afterwards)");
-  await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: false } });
-}
-
 try {
   await svc("PATCH", "products?slug=eq.rabbit-hole-hoodie", { body: { is_hidden: true } });
 
@@ -291,7 +314,7 @@ try {
   check("the Hidden Product vanishes from anon's catalog",
     Array.isArray(hiddenProducts) &&
       !hiddenProducts.some((p) => p.slug === "rabbit-hole-hoodie") &&
-      hiddenProducts.length === productCount - 1,
+      hiddenProducts.length === visibleBefore - 1,
     JSON.stringify(hiddenProducts));
 
   const hiddenAvail = (await anon("GET", `variants_available?select=color,size&product_id=eq.${hoodieId}`)).json;
@@ -333,7 +356,7 @@ if (!hoodieWasHidden) {
   check("reverted: the Product is visible again",
     Array.isArray(restored) &&
       restored.some((p) => p.slug === "rabbit-hole-hoodie") &&
-      restored.length === productCount,
+      restored.length === visibleBefore,
     JSON.stringify(restored));
 
   const facetsAfter = await facetTerms();
@@ -367,8 +390,10 @@ const inThirtyMinutes = () => new Date(Date.now() + 30 * 60_000).toISOString();
 // The first Variant carrying no live hold. Taking `limit=1` blindly lands on
 // whatever id sorts first, which may be the one a real checkout is holding --
 // and then every arithmetic assertion below is off by that hold.
-const testVariant = (await svc("GET", "variants?select=id,stock&order=id")).json
-  ?.find((v) => !(v.id in heldPer));
+// Visible-Product Variants only, for the reason spelled out in section 5:
+// reserve_cart reports 0 available for a Hidden Product's Variant, which is
+// correct behaviour and would fail every assertion here.
+const testVariant = (await visibleVariants(0)).find((v) => !(v.id in heldPer));
 if (!testVariant) throw new Error("no variants in the database to test reserve_cart against");
 
 const clearHolds = () => svc("DELETE", "reservations?stripe_session_id=like.cs_test_rc_*");
@@ -503,7 +528,9 @@ section("11. checkout.session.expired releases only held Reservations (#30)");
 // completed, so the filter is belt-and-braces -- but an unfiltered UPDATE here
 // would rewrite the history of a paid Order, and that is not a thing to leave
 // resting on an assumption about another company's event ordering.
-const relVariant = (await svc("GET", "variants?select=id&order=id")).json?.[0];
+// Same reason as sections 5 and 9: a Hidden Product's Variant is unbuyable, and
+// this section is about releasing a hold rather than about Hidden.
+const relVariant = (await visibleVariants(0))[0];
 if (!relVariant) throw new Error("no variants in the database to test the release against");
 
 const relRows = [
@@ -754,9 +781,18 @@ check("nothing was written by the rejected upload", anonUploaded.status === 400 
 // is sent at any point. The limit blocks manual testing, not this.
 
 const PROBE_PREFIX = "rls-probe-";
-const PROBE_PASSWORD = "rls-probe-pw-9f3a";
+// Random per run, never a constant. These accounts are real and confirmed, the
+// password grant is enabled on this project, and the window between creating one
+// and deleting it is not zero -- a crash, a Ctrl-C or a thrown assertion lands
+// in it. A literal here would be a working production login published in a git
+// repository, and section 15 briefly puts one of these accounts on the admin
+// allowlist. A value that exists only in this process cannot be that.
+const PROBE_PASSWORD = `probe-${crypto.randomUUID()}`;
 const PROBE_SESSION = "cs_test_rls_probe_";
 const PROBE_HIDDEN_SLUG = "rls-probe-hidden-product";
+const PROBE_CUSTOMER_SLUG = "rls-probe-customer-write";
+const PROBE_HERO_TITLE = "rls-probe-hero customer";
+const PROBE_UPLOAD = "rls-probe-customer.txt";
 
 async function auth(key, method, path, { body, bearer } = {}) {
   const res = await fetch(`${URL_}/auth/v1/${path}`, {
@@ -774,10 +810,24 @@ async function auth(key, method, path, { body, bearer } = {}) {
   return { status: res.status, json, text };
 }
 
-/** Everything this section could have left behind, whether or not it finished. */
+/**
+ * Everything this section could have left behind, whether or not it finished.
+ *
+ * Note what it deletes beyond the rows this suite creates deliberately: the
+ * Product, Hero Story and Storage object that customer A *attempts* to write.
+ * Those attempts are supposed to be refused -- but the run where one of them
+ * succeeds is precisely the run this suite exists to catch, and it is the worst
+ * possible moment to also leave a stray row in the client's live catalog.
+ */
 async function sweepProbes() {
   await svc("DELETE", `orders?stripe_session_id=like.${PROBE_SESSION}*`);
   await svc("DELETE", `products?slug=eq.${PROBE_HIDDEN_SLUG}`);
+  await svc("DELETE", `products?slug=eq.${PROBE_CUSTOMER_SLUG}`);
+  await svc("DELETE", `hero_stories?title=eq.${encodeURIComponent(PROBE_HERO_TITLE)}`);
+  await fetch(`${URL_}/storage/v1/object/product-images/${PROBE_UPLOAD}`, {
+    method: "DELETE",
+    headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` },
+  }).catch(() => {});
   const listed = await auth(SERVICE, "GET", "admin/users?per_page=200");
   const stale = (listed.json?.users ?? []).filter((u) => (u.email ?? "").startsWith(PROBE_PREFIX));
   for (const u of stale) {
@@ -804,7 +854,6 @@ async function createProbeUser(tag) {
   });
   const token = signedIn.json?.access_token;
   return {
-    tag,
     email,
     id: created.json?.id,
     token,
@@ -834,6 +883,14 @@ try {
   check("two throwaway customers can sign in with real tokens",
     customerA.ok && customerB.ok,
     `A ${customerA.ok ? "ok" : "failed"}, B ${customerB.ok ? "ok" : "failed"}`);
+
+  // Stop here rather than carrying on with a token that does not exist. Every
+  // "customer A cannot ..." check below accepts a 401, and `Bearer undefined`
+  // produces exactly that -- so a broken sign-in would paint this entire section
+  // green while proving nothing at all. The finally still runs.
+  if (!customerA.ok || !customerB.ok) {
+    throw new Error("probe sign-in failed; the rest of section 14 would pass vacuously");
+  }
 
   // Give each one an Order the way the webhook does -- with the secret key,
   // because nothing holding a browser key may create an Order (section 10).
@@ -878,11 +935,25 @@ try {
   check("customer A does NOT see customer B's Order",
     !aOrders.some((o) => o.id === orderB), `${aOrders.length} rows`);
 
-  // The likelier shape of a leak: not selecting order_items directly, but
-  // pulling them up through the Order they hang off. A different policy path.
+  // The embed, both ways round. Asserting only that B's Order returns nothing
+  // would pass against a dropped order_items policy entirely -- orders_select_own
+  // already hides the parent row, so the embed has nothing to hang items off and
+  // returns 0 either way. The positive control is what makes the negative mean
+  // something: the same query shape DOES return items for A's own Order.
+  const ownEmbed = await customerA.as("GET", `orders?select=id,order_items(id)&id=eq.${orderA}`);
+  check("the embed returns Order Items for customer A's own Order (control)",
+    (ownEmbed.json?.[0]?.order_items ?? []).length === 1,
+    `${(ownEmbed.json?.[0]?.order_items ?? []).length} items`);
+
   const embedded = await customerA.as("GET", `orders?select=id,order_items(id)&id=eq.${orderB}`);
   check("customer A cannot reach B's Order Items through the embed",
     (embedded.json ?? []).length === 0, `${(embedded.json ?? []).length} rows`);
+
+  // And the direct path, which is the one order_items_select_visible actually
+  // governs: ask for B's items by B's order id, with no Order row involved.
+  const directItems = await customerA.as("GET", `order_items?select=id&order_id=eq.${orderB}`);
+  check("customer A cannot select B's Order Items directly",
+    (directItems.json ?? []).length === 0, `${(directItems.json ?? []).length} rows`);
 
   const aItems = (await customerA.as("GET", "order_items?select=id,order_id")).json ?? [];
   check("customer A's Order Items contain none of B's",
@@ -907,10 +978,14 @@ try {
     aAdmins.status === 200 && (aAdmins.json ?? []).length === 0,
     `status ${aAdmins.status}, ${(aAdmins.json ?? []).length} rows`);
 
+  // Denied outright, not "returned nothing". reservations has no policy and no
+  // grant, so this is a hard refusal -- and an empty 200 is also what a broken
+  // policy returns while the table happens to be empty. Section 3 asserts the
+  // same thing for anon, in the same words.
   const aResv = await customerA.as("GET", "reservations?select=id");
-  check("customer A cannot read reservations",
-    aResv.status === 401 || aResv.status === 403 || (aResv.json ?? []).length === 0,
-    `status ${aResv.status}, ${(aResv.json ?? []).length ?? 0} rows`);
+  check("customer A is denied reservations outright (not just empty)",
+    aResv.status === 401 || aResv.status === 403,
+    `status ${aResv.status} ${aResv.json?.code ?? ""}`);
 
   const aProductIns = await customerA.as("POST", "products", {
     body: { slug: "rls-probe-customer-write", name: "nope", price: 1 },
@@ -926,6 +1001,15 @@ try {
   await customerA.as("DELETE", `products?id=eq.${hiddenId}`);
   const stillExists = (await svc("GET", `products?select=id&id=eq.${hiddenId}`)).json ?? [];
   check("customer A cannot delete a Product", stillExists.length === 1, `${stillExists.length} rows`);
+
+  // variants, which nothing reached before on a real token, and which the
+  // dashboard's Variant editor depends on being admin-only.
+  const aVariantIns = await customerA.as("POST", "variants", {
+    body: { product_id: hiddenId, color: "Sage", size: "XL", stock: 1 },
+  });
+  check("customer A cannot insert a Variant",
+    aVariantIns.status === 401 || aVariantIns.status === 403,
+    `status ${aVariantIns.status} ${aVariantIns.json?.code ?? ""}`);
 
   const aHeroIns = await customerA.as("POST", "hero_stories", {
     body: { title: "rls-probe-hero customer", image_url: "/images/download.jpeg" },
@@ -950,16 +1034,46 @@ try {
     aUpload.status === 400 || aUpload.status === 401 || aUpload.status === 403,
     `status ${aUpload.status} ${aUpload.text.slice(0, 120)}`);
 
+  // The refusal is only half of it: prove no object appeared. A 4xx with a file
+  // in the bucket would be a far worse outcome than a clean rejection.
+  const aUploaded = await fetch(`${URL_}/storage/v1/object/product-images/${PROBE_UPLOAD}`, {
+    headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` },
+  });
+  check("nothing was written by customer A's rejected upload",
+    aUploaded.status === 400 || aUploaded.status === 404, `status ${aUploaded.status}`);
+
   const aSeesHidden = (await customerA.as("GET", `products?select=id&slug=eq.${PROBE_HIDDEN_SLUG}`)).json ?? [];
   check("customer A cannot see a Hidden Product", aSeesHidden.length === 0, `${aSeesHidden.length} rows`);
+
+  // The same question from the other side. B is a real session too, and a policy
+  // that leaked in one direction only -- say, one comparing against the wrong id
+  // -- would pass every check above.
+  const bOrders = (await customerB.as("GET", "orders?select=id")).json ?? [];
+  check("customer B sees their own Order and not A's",
+    bOrders.some((o) => o.id === orderB) && !bOrders.some((o) => o.id === orderA),
+    `${bOrders.length} rows`);
 
   // -- 15. a real admin session, and losing it ------------------------------
 
   section("15. A real admin session, and what revoking it takes away (#24)");
 
   probeAdmin = await createProbeUser("admin");
-  await svc("POST", "admins", { body: { user_id: probeAdmin.id } });
   check("a throwaway admin can sign in", probeAdmin.ok, probeAdmin.ok ? "" : "no token");
+  if (!probeAdmin.ok) throw new Error("probe admin sign-in failed");
+
+  // The allowlist row goes on AFTER the account is known good, and comes off
+  // again below. That is the narrowest window this can run in: inside it, a
+  // crash leaves an admin account on production until the next run's sweep.
+  await svc("POST", "admins", { body: { user_id: probeAdmin.id } });
+
+  // The positive half of customer A's empty admins read. A sees 0 rows, which is
+  // also what a dropped policy returns -- so the check that tells them apart is
+  // this one: an admin sees exactly their OWN row while the table holds more.
+  const totalAdmins = (await svc("GET", "admins?select=user_id")).json?.length ?? 0;
+  const adminSelf = (await probeAdmin.as("GET", "admins?select=user_id")).json ?? [];
+  check("an admin sees exactly their own allowlist row, and the table holds more",
+    totalAdmins >= 2 && adminSelf.length === 1 && adminSelf[0]?.user_id === probeAdmin.id,
+    `${adminSelf.length} of ${totalAdmins} rows visible`);
 
   const adminSeesHidden = (await probeAdmin.as("GET", `products?select=id&slug=eq.${PROBE_HIDDEN_SLUG}`)).json ?? [];
   check("the admin sees the Hidden Product", adminSeesHidden.length === 1, `${adminSeesHidden.length} rows`);
@@ -967,6 +1081,13 @@ try {
   await probeAdmin.as("PATCH", `products?id=eq.${hiddenId}`, { body: { name: "RLS probe renamed" } });
   const adminRenamed = (await svc("GET", `products?select=name&id=eq.${hiddenId}`)).json?.[0]?.name;
   check("the admin can rename a Product", adminRenamed === "RLS probe renamed", `name is "${adminRenamed}"`);
+
+  const adminVariantIns = await probeAdmin.as("POST", "variants", {
+    body: { product_id: hiddenId, color: "Sage", size: "XL", stock: 1 },
+  });
+  check("the admin can add a Variant (variants_admin_write)",
+    adminVariantIns.status === 201 || adminVariantIns.status === 200,
+    `status ${adminVariantIns.status} ${adminVariantIns.json?.message ?? ""}`);
 
   const adminOrders = (await probeAdmin.as("GET", "orders?select=id")).json ?? [];
   check("the admin sees every customer's Orders (orders_admin_all)",
@@ -1014,8 +1135,14 @@ try {
   await sweepProbes();
   const leftover = await auth(SERVICE, "GET", "admin/users?per_page=200");
   const remaining = (leftover.json?.users ?? []).filter((u) => (u.email ?? "").startsWith(PROBE_PREFIX));
-  check("every throwaway account and Order was cleaned up", remaining.length === 0,
-    `${remaining.length} probe account(s) left behind`);
+  // Accounts were the whole of this check until a review pointed out that it
+  // claimed more than it measured. Rows and Orders are counted too now.
+  const strayProducts = (await svc("GET", `products?select=id&slug=like.${PROBE_PREFIX}*`)).json ?? [];
+  const strayOrders = (await svc("GET", `orders?select=id&stripe_session_id=like.${PROBE_SESSION}*`)).json ?? [];
+  const strayHeroes = (await svc("GET", `hero_stories?select=id&title=like.${PROBE_PREFIX}*`)).json ?? [];
+  check("no probe account, Product, Order or Hero Story was left behind",
+    remaining.length === 0 && strayProducts.length === 0 && strayOrders.length === 0 && strayHeroes.length === 0,
+    `${remaining.length} account(s), ${strayProducts.length} Product(s), ${strayOrders.length} Order(s), ${strayHeroes.length} Hero Stor(ies)`);
 }
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
