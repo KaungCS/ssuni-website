@@ -2,7 +2,13 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import AdminImageUploader from "@/components/AdminImageUploader";
-import { getAdminProduct, type AdminImage, type AdminVariant } from "@/lib/admin-catalog";
+import {
+  getAdminProduct,
+  getPalette,
+  type AdminImage,
+  type AdminVariant,
+  type PaletteColor,
+} from "@/lib/admin-catalog";
 import {
   CATEGORIES,
   CATEGORY_SLUGS,
@@ -36,6 +42,9 @@ import {
  * server-rendered equivalent.
  */
 
+/** What a swatch falls back to when a colour row is missing -- Tailwind's gray-300, which is what the old hardcoded map rendered for an unknown colour. */
+const FALLBACK_SWATCH = "#D1D5DB";
+
 export default async function AdminProductPage({
   params,
   searchParams,
@@ -48,6 +57,10 @@ export default async function AdminProductPage({
 
   const product = await getAdminProduct(id);
   if (!product) notFound();
+
+  // The Variant forms choose from the palette (#83) rather than accepting free
+  // text, which is what keeps a storefront swatch the colour the client picked.
+  const palette = await getPalette();
 
   return (
     <div>
@@ -171,22 +184,32 @@ export default async function AdminProductPage({
 
         <ul className="mb-5">
           {product.variants.map((v) => (
-            <VariantRow key={v.id} productId={product.id} variant={v} />
+            <VariantRow key={v.id} productId={product.id} variant={v} palette={palette} />
           ))}
         </ul>
 
-        <form action={saveVariantAction} className="flex flex-wrap items-end gap-3 border border-ssuni-light2 p-5">
-          <input type="hidden" name="productId" value={product.id} />
-          <Field label="Colour" name="color" placeholder="Sage" required />
-          <Field label="Size" name="size" placeholder="M" required />
-          <Field label="Stock" name="stock" type="number" min="0" step="1" defaultValue={0} required />
-          <button
-            type="submit"
-            className="border border-ssuni-brown px-6 py-2.5 font-belleza uppercase tracking-widest text-xs hover:bg-ssuni-brown hover:text-ssuni-light1 transition-colors cursor-pointer"
-          >
-            Add variant
-          </button>
-        </form>
+        {palette.length === 0 ? (
+          <p className="font-belleza text-sm text-ssuni-slate border border-ssuni-light2 p-5">
+            Your palette is empty, so there is no colour to give a Variant.{" "}
+            <Link href="/admin/colors" className="underline hover:text-ssuni-brown transition-colors">
+              Add a colour first
+            </Link>
+            .
+          </p>
+        ) : (
+          <form action={saveVariantAction} className="flex flex-wrap items-end gap-3 border border-ssuni-light2 p-5">
+            <input type="hidden" name="productId" value={product.id} />
+            <ColorSelect palette={palette} value={null} />
+            <Field label="Size" name="size" placeholder="M" required />
+            <Field label="Stock" name="stock" type="number" min="0" step="1" defaultValue={0} required />
+            <button
+              type="submit"
+              className="border border-ssuni-brown px-6 py-2.5 font-belleza uppercase tracking-widest text-xs hover:bg-ssuni-brown hover:text-ssuni-light1 transition-colors cursor-pointer"
+            >
+              Add variant
+            </button>
+          </form>
+        )}
       </section>
 
       {/* ---- Images ---- */}
@@ -247,7 +270,25 @@ export default async function AdminProductPage({
   );
 }
 
-function VariantRow({ productId, variant }: { productId: string; variant: AdminVariant }) {
+/**
+ * One Variant.
+ *
+ * A Variant that has been ordered shows its colour and size as text with
+ * hidden inputs carrying them, rather than as editable fields (#84). The
+ * database refuses the change either way -- `freeze_sold_variant` is the rule,
+ * because the client also edits in Supabase Studio -- but a field that accepts
+ * a value and then loses it is a worse way to learn that than never offering
+ * it. Stock stays editable: restocking says nothing about what was sold.
+ */
+function VariantRow({
+  productId,
+  variant,
+  palette,
+}: {
+  productId: string;
+  variant: AdminVariant;
+  palette: PaletteColor[];
+}) {
   // Held = the gap between the shelf and what the shop will sell. Shown only
   // when it is non-zero, so the common case stays quiet.
   const held = variant.stock - variant.availableStock;
@@ -257,8 +298,27 @@ function VariantRow({ productId, variant }: { productId: string; variant: AdminV
       <form action={saveVariantAction} className="flex flex-wrap items-end gap-3 grow">
         <input type="hidden" name="productId" value={productId} />
         <input type="hidden" name="variantId" value={variant.id} />
-        <Field label="Colour" name="color" defaultValue={variant.color} required />
-        <Field label="Size" name="size" defaultValue={variant.size} required />
+
+        {variant.hasOrders ? (
+          <>
+            <input type="hidden" name="color" value={variant.color} />
+            <input type="hidden" name="size" value={variant.size} />
+            <p className="font-belleza text-sm pb-2 flex items-center gap-2">
+              <span
+                aria-hidden
+                className="inline-block w-3.5 h-3.5 rounded-full border border-black/10"
+                style={{ backgroundColor: variant.colorHex ?? FALLBACK_SWATCH }}
+              />
+              {variant.color} · {variant.size}
+            </p>
+          </>
+        ) : (
+          <>
+            <ColorSelect palette={palette} value={variant.color} />
+            <Field label="Size" name="size" defaultValue={variant.size} required />
+          </>
+        )}
+
         <Field label="Stock" name="stock" type="number" min="0" step="1" defaultValue={variant.stock} required />
 
         <p className="font-belleza text-sm text-ssuni-slate pb-2">
@@ -274,17 +334,52 @@ function VariantRow({ productId, variant }: { productId: string; variant: AdminV
         </button>
       </form>
 
-      <form action={deleteVariantAction}>
-        <input type="hidden" name="productId" value={productId} />
-        <input type="hidden" name="variantId" value={variant.id} />
-        <button
-          type="submit"
-          className="font-belleza text-xs uppercase tracking-widest text-ssuni-slate hover:text-ssuni-brown transition-colors pb-2.5 cursor-pointer"
-        >
-          Remove
-        </button>
-      </form>
+      {variant.hasOrders ? (
+        <p className="font-belleza text-xs text-ssuni-slate pb-2.5 max-w-xs">
+          Ordered — colour and size are locked, and it cannot be removed. They are what
+          the receipt says was bought.
+        </p>
+      ) : (
+        <form action={deleteVariantAction}>
+          <input type="hidden" name="productId" value={productId} />
+          <input type="hidden" name="variantId" value={variant.id} />
+          <button
+            type="submit"
+            className="font-belleza text-xs uppercase tracking-widest text-ssuni-slate hover:text-ssuni-brown transition-colors pb-2.5 cursor-pointer"
+          >
+            Remove
+          </button>
+        </form>
+      )}
     </li>
+  );
+}
+
+/**
+ * The Variant colour picker: the palette (#83) and nothing else, so
+ * `variants_color_fkey` is a backstop here rather than something the client
+ * meets. `value` is null on the add form, where the first colour is as good a
+ * default as any.
+ */
+function ColorSelect({ palette, value }: { palette: PaletteColor[]; value: string | null }) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="font-belleza text-xs uppercase tracking-widest text-ssuni-slate">
+        Colour
+      </span>
+      <select
+        name="color"
+        defaultValue={value ?? palette[0]?.name ?? ""}
+        required
+        className="font-belleza border border-ssuni-light2 bg-ssuni-light1 px-3 py-2 text-sm cursor-pointer"
+      >
+        {palette.map((color) => (
+          <option key={color.name} value={color.name}>
+            {color.name}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

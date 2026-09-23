@@ -503,6 +503,164 @@ begin
 end
 $$;
 
+-- ---------------------------------------------------------------------------
+-- 14. The colour palette (#83) and the sold-Variant freeze (#84).
+-- ---------------------------------------------------------------------------
+--
+-- Run as the owner rather than through a role: what is under test here is a
+-- constraint and a trigger, which no policy can talk its way past. The RLS half
+-- of the palette (anon reads it, anon cannot write it) lives in rls.mjs.
+--
+-- All of it inside the same transaction that rolls back, including the probe
+-- Order -- a real Order row would otherwise appear on /admin/orders.
+
+reset role;
+select set_config('request.jwt.claims', '', true);
+
+insert into public.colors (name, hex) values ('Freeze Probe Shade', '#123456');
+
+-- A Variant with no Order behind it, because this section makes one sold on
+-- purpose and needs to start from the unsold state. Picking `limit 1` by id
+-- landed on a Variant that already had a real Order, which turned check 50
+-- into a correct refusal reported as a failure -- and the catalog grows
+-- between sessions, so that would have come and gone on its own.
+create temp table probe_variant as
+  select v.id, v.size, v.stock
+  from public.variants v
+  where not exists (select 1 from public.order_items oi where oi.variant_id = v.id)
+  order by v.id
+  limit 1;
+
+insert into results select 49, 'found_an_unsold_probe_variant',
+  (select count(*) from probe_variant) = 1, true;
+
+-- Giving it the probe colour is itself the "an unsold Variant can still be
+-- recoloured" case: this Variant has no Order yet, so the trigger must let it
+-- through.
+do $$
+declare ok boolean := false;
+begin
+  begin
+    update public.variants set color = 'Freeze Probe Shade'
+    where id = (select id from probe_variant);
+    ok := true;
+  exception when others then
+    ok := false;
+  end;
+  insert into results select 50, 'unsold_variant_colour_editable', ok, true;
+end
+$$;
+
+insert into public.orders (id, user_id, stripe_session_id, total)
+select '00000000-0000-4000-8000-00000000fa11', (select id from subject),
+       'cs_test_freeze_probe', 10.00;
+
+insert into public.order_items (order_id, variant_id, quantity, unit_price)
+select '00000000-0000-4000-8000-00000000fa11', id, 1, 10.00 from probe_variant;
+
+-- The Variant has now been bought. Its colour is what the receipt says.
+do $$
+declare refused boolean := false;
+begin
+  begin
+    update public.variants set color = 'Espresso'
+    where id = (select id from probe_variant);
+  exception when others then
+    refused := true;
+  end;
+  insert into results select 51, 'sold_variant_colour_frozen', refused, true;
+end
+$$;
+
+do $$
+declare refused boolean := false;
+begin
+  begin
+    update public.variants set size = 'XXL'
+    where id = (select id from probe_variant);
+  exception when others then
+    refused := true;
+  end;
+  insert into results select 52, 'sold_variant_size_frozen', refused, true;
+end
+$$;
+
+-- Restocking says nothing about what was sold, so it must stay free. The stock
+-- decrement inside complete_checkout takes this same path.
+do $$
+declare ok boolean := false;
+begin
+  begin
+    update public.variants set stock = stock + 1
+    where id = (select id from probe_variant);
+    ok := true;
+  exception when others then
+    ok := false;
+  end;
+  insert into results select 53, 'sold_variant_stock_still_editable', ok, true;
+end
+$$;
+
+-- The interaction between the two tickets. Renaming a palette entry cascades
+-- into variants.color, including on a Variant that has sold -- a rename changes
+-- what a shade is CALLED, not which shade was bought. If the freeze trigger
+-- stops exempting the cascade, this is what fails.
+do $$
+declare ok boolean := false;
+begin
+  begin
+    update public.colors set name = 'Freeze Probe Renamed' where name = 'Freeze Probe Shade';
+    ok := true;
+  exception when others then
+    ok := false;
+  end;
+  insert into results select 54, 'palette_rename_reaches_sold_variant', ok, true;
+end
+$$;
+
+insert into results
+select 55, 'rename_cascaded_to_the_variant',
+       (select color from public.variants where id = (select id from probe_variant))
+         = 'Freeze Probe Renamed',
+       true;
+
+-- ON DELETE RESTRICT: removing a colour still in use would otherwise take its
+-- Variants with it. The dashboard only offers delete at zero usage; this is the
+-- backstop under it.
+do $$
+declare refused boolean := false;
+begin
+  begin
+    delete from public.colors where name = 'Freeze Probe Renamed';
+  exception when foreign_key_violation then
+    refused := true;
+  end;
+  insert into results select 56, 'colour_in_use_cannot_be_deleted', refused, true;
+end
+$$;
+
+-- The palette is the vocabulary: a Variant cannot hold a colour that is not in
+-- it. This is what makes the storefront swatch always resolvable.
+do $$
+declare refused boolean := false;
+begin
+  begin
+    update public.variants set color = 'Not In The Palette'
+    where id = (select id from public.variants where id <> (select id from probe_variant) limit 1);
+  exception when foreign_key_violation then
+    refused := true;
+  end;
+  insert into results select 57, 'variant_cannot_take_an_unlisted_colour', refused, true;
+end
+$$;
+
+-- The view carries the hex itself, because PostgREST cannot embed a foreign key
+-- through a view. A null here means the storefront renders the grey fallback.
+insert into results
+select 58, 'variants_available_exposes_a_hex',
+       (select count(*) from public.variants_available where color_hex is null) = 0,
+       true;
+
 select seq, check_name,
        case when result = expected then 'PASS' else 'FAIL' end as outcome,
        result, expected
