@@ -697,5 +697,51 @@ const anonUploaded = await storage(SERVICE, "GET", "object/product-images/rls-pr
 check("nothing was written by the rejected upload", anonUploaded.status === 400 || anonUploaded.status === 404,
   `status ${anonUploaded.status}`);
 
+// -- 10. The colour palette (#83) --------------------------------------------
+section("10. The colour palette is public to read and admin-only to write");
+
+const palette = await anon("GET", "colors?select=name,hex&order=name");
+check("anon can read the palette", palette.status === 200, `status ${palette.status}`);
+
+// A floor, never an exact count: the client curates this table between
+// sessions, and an exact assertion would fail for describing nothing real.
+check("the palette holds at least the seeded shades", (palette.json?.length ?? 0) >= 5,
+  `${palette.json?.length ?? 0} colours`);
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
+check("every colour carries a hex", (palette.json ?? []).every((c) => HEX.test(c.hex)),
+  (palette.json ?? []).filter((c) => !HEX.test(c.hex)).map((c) => c.name).join(", "));
+
+const colorIns = await anon("POST", "colors", { body: { name: "Anon Shade", hex: "#000000" } });
+check("anon cannot add a colour", colorIns.status >= 400, `status ${colorIns.status}`);
+
+const colorUpd = await anon("PATCH", "colors?name=eq.Sage", {
+  body: { hex: "#000000" },
+  prefer: "return=representation",
+});
+check("anon cannot repaint a colour",
+  colorUpd.status >= 400 || (colorUpd.json?.length ?? 0) === 0, `status ${colorUpd.status}`);
+
+const colorDel = await anon("DELETE", "colors?name=eq.Sage", { prefer: "return=representation" });
+check("anon cannot delete a colour",
+  colorDel.status >= 400 || (colorDel.json?.length ?? 0) === 0, `status ${colorDel.status}`);
+
+const paletteAfter = await anon("GET", "colors?select=name,hex&order=name");
+check("the palette is unchanged by those attempts",
+  JSON.stringify(paletteAfter.json) === JSON.stringify(palette.json),
+  `${palette.json?.length ?? 0} -> ${paletteAfter.json?.length ?? 0}`);
+
+// The hex reaches the storefront as a view column rather than an embed:
+// PostgREST cannot follow a foreign key through a view, which is the whole
+// reason variants_available joins public.colors itself.
+const withHex = await anon("GET", "variants_available?select=color,color_hex");
+check("variants_available exposes color_hex to anon", withHex.status === 200,
+  `status ${withHex.status}`);
+check("every visible Variant resolves to a swatch",
+  (withHex.json ?? []).every((v) => HEX.test(v.color_hex ?? "")),
+  (withHex.json ?? []).filter((v) => !HEX.test(v.color_hex ?? "")).map((v) => v.color).join(", ")
+    || "none missing");
+
+
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

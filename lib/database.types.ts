@@ -54,6 +54,21 @@ export type Database = {
         }
         Relationships: []
       }
+      colors: {
+        Row: {
+          hex: string
+          name: string
+        }
+        Insert: {
+          hex: string
+          name: string
+        }
+        Update: {
+          hex?: string
+          name?: string
+        }
+        Relationships: []
+      }
       hero_stories: {
         Row: {
           created_at: string
@@ -324,6 +339,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "variants_color_fkey"
+            columns: ["color"]
+            isOneToOne: false
+            referencedRelation: "colors"
+            referencedColumns: ["name"]
+          },
+          {
             foreignKeyName: "variants_product_id_fkey"
             columns: ["product_id"]
             isOneToOne: false
@@ -345,28 +367,20 @@ export type Database = {
         Row: {
           available_stock: number | null
           color: string | null
+          color_hex: string | null
           id: string | null
           product_id: string | null
           size: string | null
           stock: number | null
         }
-        Insert: {
-          available_stock?: never
-          color?: string | null
-          id?: string | null
-          product_id?: string | null
-          size?: string | null
-          stock?: number | null
-        }
-        Update: {
-          available_stock?: never
-          color?: string | null
-          id?: string | null
-          product_id?: string | null
-          size?: string | null
-          stock?: number | null
-        }
         Relationships: [
+          {
+            foreignKeyName: "variants_color_fkey"
+            columns: ["color"]
+            isOneToOne: false
+            referencedRelation: "colors"
+            referencedColumns: ["name"]
+          },
           {
             foreignKeyName: "variants_product_id_fkey"
             columns: ["product_id"]
