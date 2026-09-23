@@ -1,13 +1,14 @@
 import { createClient } from "./supabase/server";
 
 /**
- * Hero Story reads. Issue #22, per ADR 0003 (amended 2026-09-18).
+ * Hero Story reads. Issue #22, per ADR 0003 (amended 2026-09-18 and 2026-09-22).
  *
- * The only place the storefront queries `hero_stories`, the way lib/catalog.ts
- * is for the catalog and lib/orders.ts is for Orders. The Admin Dashboard
- * (ADR 0007, October) is the expected second caller, and it should extend this
- * file rather than writing its own query -- the Hidden rule below is the kind of
- * thing that silently diverges once two places know it.
+ * The only place the *storefront* queries `hero_stories`, the way lib/catalog.ts
+ * is for the catalog and lib/orders.ts is for Orders. The Admin Dashboard reads
+ * the same table through lib/admin-hero.ts, which is a separate module rather
+ * than an extension of this one because the shapes genuinely differ: the
+ * dashboard wants every Story including the Archive, with raw column values to
+ * put back in a form.
  *
  * Like both of those modules this reaches `next/headers` through
  * lib/supabase/server.ts, so **no `"use client"` file may import a runtime value
@@ -35,18 +36,30 @@ export type HeroStory = {
 export async function getHeroStories(): Promise<HeroStory[]> {
   const supabase = await createClient();
 
-  // Hidden Stories are excluded by RLS (hero_stories_select_visible), so nothing
-  // here filters on is_hidden -- exactly as lib/catalog.ts does not filter
-  // Hidden Products. Adding a redundant client-side filter would imply the
-  // database is not already doing it, which is the wrong thing to imply.
+  // **This filter is not redundant with RLS, and it is not a mistake.** Per the
+  // 2026-09-22 amendment to ADR 0003, it encodes a rule the policy does not
+  // express: admins do not preview the Archive *on this surface*.
   //
-  // One caveat worth knowing rather than coding around: that policy also grants
-  // an admin the Archive, so a signed-in admin browsing the storefront sees
-  // Hidden Stories on the home page. That is the same behaviour products already
-  // have, and it is a preview rather than a leak.
+  // `hero_stories_select_visible` is `not is_hidden or private.is_admin()`, so
+  // without this line a signed-in admin browsing the storefront is served every
+  // Hidden Story on the home page -- exactly the arrangement Hidden Products
+  // still have in the catalog, where lib/catalog.ts deliberately does NOT filter.
+  //
+  // The two were split on purpose. A Hidden Product is one card in a grid
+  // carrying a Hidden pill: a preview an admin scrolls past in a second. A
+  // Hidden Hero Story is a full-screen panel they have to scroll *through*, and
+  // the first one owns the page's <h1> -- so the Archive does not read as a
+  // preview there, it reads as the home page being broken. /admin/hero now lists
+  // every Story with its Hidden state, so nothing is lost by taking them off the
+  // storefront.
+  //
+  // If you arrived here knowing the Hidden-Product pattern and reached for the
+  // delete key: that is the reaction this comment exists for. The policy decides
+  // who *may* read a Hidden Story; this decides where they are *shown* one.
   const { data, error } = await supabase
     .from("hero_stories")
     .select("id, eyebrow, title, subtitle, image_url, cta_label, cta_href, sort_order, created_at")
+    .eq("is_hidden", false)
     .order("sort_order", { ascending: true })
     .order("created_at", { ascending: true });
 
