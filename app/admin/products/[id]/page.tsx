@@ -209,12 +209,17 @@ export default async function AdminProductPage({
         </ul>
 
         <AdminImageUploader
-          productId={product.id}
-          nextSortOrder={
-            product.images.length === 0
-              ? 0
-              : Math.max(...product.images.map((i) => i.sortOrder)) + 1
-          }
+          pathPrefix={product.id}
+          hiddenFields={{
+            productId: product.id,
+            // One past the last image, so a fresh upload lands at the end of
+            // the gallery.
+            sortOrder: String(
+              product.images.length === 0
+                ? 0
+                : Math.max(...product.images.map((i) => i.sortOrder)) + 1,
+            ),
+          }}
           action={addImageAction}
         />
       </section>
