@@ -13,17 +13,16 @@ import { useCart } from "./CartProvider";
  */
 const PLACEHOLDER_IMAGE = "/images/download.jpeg";
 
-// A quick helper to map color names to hex codes/Tailwind classes for the swatches
-const getColorSwatch = (colorName: string) => {
-  const map: Record<string, string> = {
-    Espresso: "bg-ssuni-brown",
-    Bone: "bg-[#D9D3C7]",
-    Natural: "bg-ssuni-light2",
-    Sage: "bg-ssuni-sage",
-    Slate: "bg-ssuni-slate",
-  };
-  return map[colorName] || "bg-gray-300";
-};
+/**
+ * What a swatch falls back to when a Variant's colour is not in the palette.
+ *
+ * Tailwind's gray-300 -- the same grey the hardcoded name-to-class map this
+ * replaced produced for any colour it had not heard of (#83). With
+ * `variants_color_fkey` in place a Variant cannot hold an unlisted colour, and
+ * `variants_available` left-joins the palette so a missing row greys the dot
+ * rather than dropping the Variant. This is the visible end of both decisions.
+ */
+const FALLBACK_SWATCH = "#D1D5DB";
 
 /**
  * The interactive half of the product detail page. The server component in
@@ -51,9 +50,16 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
   // blank panel -- `images` comes from the server and can be empty.
   const shownImage = product.images[imageIndex]?.url ?? PLACEHOLDER_IMAGE;
 
+  // Distinct colours in the order the Variants arrive, each with the palette
+  // hex that came down on the same round trip. A Map dedupes and keeps the
+  // first hex seen -- every Variant of one colour carries the same one, since
+  // it is joined from a single palette row.
   const availableColors = useMemo(() => {
-    const colors = product.variants.map((v) => v.color);
-    return Array.from(new Set(colors));
+    const byName = new Map<string, string | null>();
+    for (const v of product.variants) {
+      if (!byName.has(v.color)) byName.set(v.color, v.colorHex);
+    }
+    return Array.from(byName, ([name, hex]) => ({ name, hex }));
   }, [product]);
 
   const availableSizes = useMemo(() => {
@@ -144,19 +150,25 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
             <div className="flex gap-3">
               {availableColors.map((color) => (
                 <button
-                  key={color}
+                  key={color.name}
                   onClick={() => {
-                    setSelectedColor(color);
+                    setSelectedColor(color.name);
                     setSelectedSize(null);
                   }}
                   className={`flex items-center gap-2 px-4 py-2 font-belleza text-sm border transition-all ${
-                    selectedColor === color
+                    selectedColor === color.name
                       ? "border-ssuni-brown bg-ssuni-light2 text-ssuni-brown shadow-sm"
                       : "border-ssuni-slate/30 text-ssuni-slate hover:border-ssuni-brown/50"
                   }`}
                 >
-                  <span className={`w-3.5 h-3.5 rounded-full border border-black/10 ${getColorSwatch(color)}`} />
-                  {color}
+                  {/* The border matters: a near-white shade is otherwise an
+                      invisible swatch on a cream background. */}
+                  <span
+                    aria-hidden
+                    className="w-3.5 h-3.5 rounded-full border border-black/10"
+                    style={{ backgroundColor: color.hex ?? FALLBACK_SWATCH }}
+                  />
+                  {color.name}
                 </button>
               ))}
             </div>
