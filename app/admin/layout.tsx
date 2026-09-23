@@ -48,6 +48,9 @@ export default async function AdminLayout({
             <Link href="/admin/colors" className="hover:text-ssuni-slate transition-colors">
               Colours
             </Link>
+            <Link href="/admin/hero" className="hover:text-ssuni-slate transition-colors">
+              Hero Stories
+            </Link>
             <Link href="/catalog" className="text-ssuni-slate hover:text-ssuni-brown transition-colors">
               View shop
             </Link>

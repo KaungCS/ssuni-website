@@ -4,8 +4,18 @@ import { useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 /**
- * Uploads a Product image straight from the browser to Supabase Storage, then
- * hands the resulting public URL to a Server Action to record as a row.
+ * Uploads an image straight from the browser to Supabase Storage, then hands the
+ * resulting public URL to a Server Action to record.
+ *
+ * Not Product-shaped, deliberately (#77). It takes a path prefix and whatever
+ * hidden fields its Server Action needs, so the Product gallery and the Hero
+ * Story editor share one upload rather than one each — two copies of this is how
+ * one of them keeps `upsert: false` and the other quietly loses it. Both write
+ * into the **same bucket**: `product_images_storage_admin_write` is scoped to
+ * `bucket_id = 'product-images'` and an admin check, with no opinion about the
+ * path, so a `hero/` prefix needs no migration and no second policy. The
+ * bucket's name is mildly wrong for the contents; a second bucket would be a
+ * migration, two policies and an `rls.mjs` section to fix a noun.
  *
  * The bytes never cross the worker. That is the point: on Cloudflare a request
  * body has a size ceiling and a memory cost, and routing a photograph through a
@@ -21,14 +31,17 @@ import { createClient } from "@/lib/supabase/client";
  * the module.
  */
 export default function AdminImageUploader({
-  productId,
-  nextSortOrder,
+  pathPrefix,
+  hiddenFields,
   action,
+  label = "Add an image",
 }: {
-  productId: string;
-  /** One past the last image, so a fresh upload lands at the end of the gallery. */
-  nextSortOrder: number;
+  /** Folder inside the bucket, so it stays navigable in Studio: a Product id, or `hero/<id>`. */
+  pathPrefix: string;
+  /** Whatever the Server Action needs alongside the URL -- a Product id and a sort order, or a Story id. */
+  hiddenFields: Record<string, string>;
   action: (formData: FormData) => void;
+  label?: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,11 +54,11 @@ export default function AdminImageUploader({
 
     const supabase = createClient();
 
-    // Prefixed with the Product id so the bucket stays navigable in Studio, and
-    // suffixed with a timestamp so re-uploading a file of the same name does not
-    // overwrite the previous one — the old row would then point at new bytes.
+    // Prefixed so the bucket stays navigable in Studio, and suffixed with a
+    // timestamp so re-uploading a file of the same name does not overwrite the
+    // previous one — the old row would then point at new bytes.
     const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, "-");
-    const path = `${productId}/${Date.now()}-${safeName}`;
+    const path = `${pathPrefix}/${Date.now()}-${safeName}`;
 
     const { error: uploadError } = await supabase.storage
       .from("product-images")
@@ -70,13 +83,14 @@ export default function AdminImageUploader({
 
   return (
     <form ref={formRef} action={action} className="flex flex-col gap-2">
-      <input type="hidden" name="productId" value={productId} />
-      <input type="hidden" name="sortOrder" value={nextSortOrder} />
+      {Object.entries(hiddenFields).map(([name, value]) => (
+        <input key={name} type="hidden" name={name} value={value} />
+      ))}
       <input type="hidden" name="url" ref={urlRef} />
 
       <label className="flex flex-col gap-1">
         <span className="font-belleza text-xs uppercase tracking-widest text-ssuni-slate">
-          Add an image
+          {label}
         </span>
         <input
           type="file"
