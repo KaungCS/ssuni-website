@@ -55,6 +55,8 @@ _Was_: Hero Slot — a fixed position (one primary banner plus a few secondary t
 **Hidden**:
 A Product or Hero Story's state when temporarily excluded from customer-facing pages without deleting the record. Distinct from removal, which deletes it outright.
 
+The two differ in what an *admin* sees, deliberately. A Hidden Product is still served to an admin browsing the catalog, marked as Hidden — a preview of what shoppers cannot see. A Hidden Hero Story is not shown on the landing page at all, to anyone, and appears only in the Admin Dashboard: a full-bleed panel is too large to be a preview, and the first Story on the page carries its heading. See the 2026-09-22 amendment to ADR 0003.
+
 **Archive**:
 The set of Hidden Products and Hero Stories a client can browse in the Admin Dashboard — a draft/no-longer-relevant holding area, kept indefinitely until the client explicitly removes an entry.
 

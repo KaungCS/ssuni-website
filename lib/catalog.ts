@@ -75,6 +75,7 @@ const CATALOG_SELECT = `
   variants_available (
     id,
     color,
+    color_hex,
     size,
     available_stock
   ),
@@ -89,6 +90,12 @@ const CATALOG_SELECT = `
 export type CatalogVariant = {
   id: string;
   color: string;
+  /**
+   * The swatch, from the admin-curated palette (#83). Null only if a colour
+   * row went missing -- the view left-joins it, deliberately, so a Variant
+   * stays sellable with a neutral swatch rather than vanishing.
+   */
+  colorHex: string | null;
   size: string;
   /** Available Stock per CONTEXT.md -- stock minus unexpired Reservations. */
   availableStock: number;
@@ -182,6 +189,7 @@ type RawProduct = {
   variants_available: {
     id: string | null;
     color: string | null;
+    color_hex: string | null;
     size: string | null;
     available_stock: number | null;
   }[];
@@ -221,6 +229,7 @@ function toCatalogProduct(row: RawProduct): CatalogProduct {
     .map((v) => ({
       id: v.id!,
       color: v.color!,
+      colorHex: v.color_hex,
       size: v.size!,
       availableStock: v.available_stock ?? 0,
     }))
@@ -384,9 +393,10 @@ export type ResolvedVariant = {
  * is tested.
  *
  * Ids that resolve to nothing are simply absent from the result. That is not an
- * error case to handle here: `variants_available` ends in `where not
- * p.is_hidden`, so a Product the client hides in Supabase Studio drops out of
- * the view, and `reconcile` already reports an absent Variant as unavailable.
+ * error case to handle here: the view is `security_invoker`, so a Product the
+ * client hides in Supabase Studio drops its Variants through
+ * `variants_select_visible`, and `reconcile` already reports an absent Variant
+ * as unavailable.
  */
 export async function getVariantsByIds(variantIds: string[]): Promise<ResolvedVariant[]> {
   if (variantIds.length === 0) return [];
