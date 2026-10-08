@@ -1,5 +1,7 @@
 # September Roadmap
 
+> **Superseded 2026-10-07 — the deadline was dropped.** Launch now waits on the client-owned track below, and the plan of record is [handoff-2026-10-08.md](handoff-2026-10-08.md). This file is kept as history. Its **client track** and **never-cut list** still apply; its dates, freeze and cut order do not.
+
 **Launch target: 2026-09-30 (hard).** Written 2026-08-24 — five and a half weeks, solo, ~15–20 hrs/week.
 
 This roadmap sequences the work between the storefront as it exists today and a site that can legitimately take a real customer's money. It is dependency-ordered: each week's work unblocks the next. Terminology follows [CONTEXT.md](../CONTEXT.md).

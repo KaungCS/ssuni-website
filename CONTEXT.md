@@ -28,7 +28,7 @@ A Variant plus a quantity, as one line of a Cart. Holds a reference to the Varia
 _Avoid_: line item, cart line
 
 **Taxonomy Term**:
-One entry on a declared list the client maintains — a Department, a Category, or a Collection — carrying the name shoppers see. A Product picks Terms from these lists and can never mint a new one; a Term can only be retired by reassigning the Products that hold it.
+One entry on a declared list the client maintains — a Department, a Category, or a Collection — carrying the name shoppers see. A Product picks Terms from these lists and can never mint a new one; a Term can only be retired by reassigning the Products that hold it. Its name can be changed at any time; the address it is filed under in links cannot, so a renamed Term keeps every shared link working.
 _Avoid_: tag, label, facet
 
 **Department**:
