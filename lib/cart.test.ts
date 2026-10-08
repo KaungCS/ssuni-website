@@ -96,9 +96,9 @@ describe("reconcile", () => {
   });
 
   it("keeps a vanished Variant visible but out of the subtotal, rather than deleting it", () => {
-    // A Variant is absent from availability when its Product is Hidden: the
-    // variants_available view ends in `where not p.is_hidden`, so hiding a
-    // Product in Supabase Studio drops its Variants entirely. Deleting the row
+    // A Variant is absent from availability when its Product is Hidden: RLS on
+    // variants defers to the Product select policy, so hiding a Product in
+    // Supabase Studio drops its Variants from a shopper's read entirely. Deleting the row
     // is how a shopper checks out believing they bought something they did not.
     const items = addItem(addItem([], HOODIE_ESPRESSO_M, 2), TEE_BONE_S, 1);
     const availability = { [TEE_BONE_S]: { price: 34, availableStock: 5 } };
