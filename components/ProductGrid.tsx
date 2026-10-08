@@ -31,12 +31,26 @@ export default function ProductGrid({ products }: { products: CatalogProduct[] }
               // two in step: out of sync, the browser picks the wrong size and
               // the optimization is worse than none.
               sizes="(min-width: 1024px) 25vw, (min-width: 768px) 33vw, (min-width: 640px) 50vw, 100vw"
-              className="object-cover transition-transform duration-700 group-hover:scale-105"
+              className={`object-cover transition-transform duration-700 group-hover:scale-105 ${
+                product.isHidden ? "opacity-40" : ""
+              }`}
             />
             {/* 'New' Badge Overlay */}
             {product.isNew && (
               <span className="absolute top-3 left-3 bg-ssuni-light1 text-ssuni-brown px-3 py-1 text-xs font-belleza tracking-widest uppercase">
                 New
+              </span>
+            )}
+            {/* Only an admin can be looking at this.
+                `products_select_public` is `not is_hidden or is_admin()`, so a
+                Hidden Product reaching the grid at all proves who is asking --
+                which is why there is no session check here. Bottom left, away
+                from 'New': a Product can be both, and the two say different
+                kinds of thing. The faded image is the part that reads at a
+                glance down a grid; the pill is what makes it unambiguous. */}
+            {product.isHidden && (
+              <span className="absolute bottom-3 left-3 bg-ssuni-brown text-ssuni-light1 px-3 py-1 text-xs font-belleza tracking-widest uppercase">
+                Hidden
               </span>
             )}
           </div>

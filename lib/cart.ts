@@ -129,8 +129,8 @@ export function reconcile(
     const variant = availability[item.variantId];
 
     // Absent from availability means the Variant is not sellable at all -- most
-    // often because its Product was Hidden, since variants_available ends in
-    // `where not p.is_hidden`. The row survives as unavailable; deleting it is
+    // often because its Product was Hidden, whose Variants RLS withholds from
+    // shoppers (variants_select_visible defers to products_select_visible). The row survives as unavailable; deleting it is
     // how a shopper checks out believing they bought something they did not.
     // Nothing sellable is treated the same way, so zero stock is unavailable
     // rather than a $0 line that reads as a discount.

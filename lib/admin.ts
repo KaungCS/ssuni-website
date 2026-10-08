@@ -51,13 +51,33 @@ export async function requireAdmin() {
   // middleware, which CLAUDE.md has good reason to leave alone.
   if (!user) redirect(`/login?next=${encodeURIComponent("/admin")}`);
 
+  if (!(await isAdmin(user.id))) notFound();
+
+  return user;
+}
+
+/**
+ * Whether this user id is on the allowlist. No redirect, no 404 -- a fact.
+ *
+ * Extracted from requireAdmin() when app/profile/page.tsx became the second
+ * caller: an admin clicking "Profile" in the nav wants the dashboard, not an
+ * Order history they will never have. Two copies of this query is how the two
+ * pages come to disagree about who is an admin.
+ *
+ * Takes the id rather than reading auth itself, because both callers have
+ * already verified a user with getUser() and a second round trip to Supabase
+ * would buy nothing.
+ */
+export async function isAdmin(userId: string) {
+  const supabase = await createClient();
+
+  // Reads public.admins under admins_select_self, which returns at most the
+  // caller's own row -- so this cannot enumerate the allowlist.
   const { data } = await supabase
     .from("admins")
     .select("user_id")
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .maybeSingle();
 
-  if (!data) notFound();
-
-  return user;
+  return data !== null;
 }

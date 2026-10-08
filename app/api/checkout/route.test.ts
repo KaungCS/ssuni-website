@@ -185,8 +185,8 @@ describe("what the route refuses before it costs anything", () => {
   });
 
   it("reports a Variant that vanished from the catalog as unavailable", async () => {
-    // variants_available ends in `where not p.is_hidden`, so hiding a Product
-    // in Studio drops its Variants out of the resolve entirely.
+    // RLS on variants defers to the Product select policy, so hiding a Product
+    // in Studio drops its Variants out of a shopper's resolve entirely.
     getVariantsByIds.mockResolvedValue([]);
 
     const response = await POST(post(CART));

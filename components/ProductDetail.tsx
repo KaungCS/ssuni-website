@@ -142,6 +142,25 @@ export default function ProductDetail({ product }: { product: CatalogProduct }) 
             {product.description}
           </p>
 
+          {/* Reachable only by an admin -- see CatalogProduct.isHidden. The
+              pickers below stay populated: `variants_select_visible` defers to
+              `products_select_visible`, which has an admin exception, so only
+              the "shoppers cannot see this" half needs saying. */}
+          {product.isHidden && (
+            <div className="border border-ssuni-brown/30 bg-ssuni-light2 px-5 py-4 mb-10">
+              <span className="inline-block bg-ssuni-brown text-ssuni-light1 px-3 py-1 text-xs font-belleza tracking-widest uppercase mb-2">
+                Hidden
+              </span>
+              <p className="font-belleza text-sm text-ssuni-slate leading-relaxed">
+                Shoppers cannot see this Product. Unhide it in{" "}
+                <Link href="/admin/products" className="underline hover:text-ssuni-brown">
+                  the dashboard
+                </Link>
+                .
+              </p>
+            </div>
+          )}
+
           {/* Color Selector */}
           <div className="mb-8">
             <h3 className="font-belleza uppercase tracking-widest text-xs mb-3">

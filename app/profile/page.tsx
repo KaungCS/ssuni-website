@@ -9,6 +9,8 @@ import {
   type ShopperOrder,
 } from "@/lib/orders";
 import { createClient } from "@/lib/supabase/server";
+import { signOut } from "@/lib/auth-actions";
+import { isAdmin } from "@/lib/admin";
 
 /**
  * The shopper's own Order history. Issue #20.
@@ -19,7 +21,8 @@ import { createClient } from "@/lib/supabase/server";
  * Deliberately not the Admin Dashboard (#21, ADR 0007): this page answers "did
  * my thing ship", for one account. getMyOrders filters on user_id rather than
  * leaning on RLS alone, because the admin account satisfies orders_admin_all
- * too and would otherwise find every customer's purchases here.
+ * too and would otherwise find every customer's purchases here. An admin who
+ * lands here is sent on to /admin instead -- see the redirect below.
  */
 
 export const metadata: Metadata = {
@@ -45,13 +48,33 @@ export default async function ProfilePage() {
   // round-trip app/login/page.tsx already guards against open redirects.
   if (!user) redirect(`/login?next=${encodeURIComponent("/profile")}`);
 
+  // The admin account has no use for an Order history -- it is the shop, not a
+  // customer, and every Order it could see lives in /admin/orders already. So
+  // "Profile" in the nav is the dashboard for an admin, which is also what the
+  // ?next=/profile bounce after login resolves to. Before getMyOrders, so the
+  // redirect does not pay for a query nobody reads.
+  if (await isAdmin(user.id)) redirect("/admin");
+
   const orders = await getMyOrders(user.id);
 
   return (
     <div className="min-h-screen pt-32 pb-24">
       <div className="max-w-2xl mx-auto px-6 text-ssuni-brown">
         <h1 className="font-cinzel text-4xl mb-2">Your Orders</h1>
-        <p className="font-belleza text-ssuni-slate mb-12">{user.email}</p>
+        <div className="flex flex-wrap items-baseline justify-between gap-4 mb-12">
+          <p className="font-belleza text-ssuni-slate">{user.email}</p>
+          {/* A plain form, so signing out needs no client component and works
+              with JavaScript off -- the same trade the Admin Dashboard's
+              fulfilment form makes. */}
+          <form action={signOut}>
+            <button
+              type="submit"
+              className="font-belleza text-xs uppercase tracking-widest text-ssuni-slate hover:text-ssuni-brown transition-colors cursor-pointer"
+            >
+              Sign out
+            </button>
+          </form>
+        </div>
 
         {orders.length === 0 ? (
           <div className="border-t border-ssuni-light2 pt-10">
